@@ -232,13 +232,10 @@ async function onRunCheck() {
     setProgress(97, "Формирование отчета по критериям...");
     perf.start("render", "Рендер отчета");
     renderCriteriaReports(criteria);
-    await yieldToUi();
     setProgress(97, "Подготовка данных исправлений...");
     const pnCorrected = buildCorrectedPnData(pnWorkbookData, kgRules, benefitsRules);
-    await yieldToUi();
     const viCorrected = buildCorrectedViData(viWorkbookData, minBallData, spoMinBallData, benefitsRules, kgRules, viRules);
-    setProgress(98, "Сборка таблиц исправлений...");
-    await renderFixedPreview(pnWorkbookData, pnCorrected, viWorkbookData, viCorrected);
+    renderFixedPreview(pnWorkbookData, pnCorrected, viWorkbookData, viCorrected);
     perf.end("render");
     perf.render();
     if (fixedTabPanel && tabFixedButton) setActiveTab("fixed");
@@ -958,7 +955,7 @@ async function checkQualificationByLevel(workbookData, fileLabel, onProgress) {
     }
 
     if (onProgress) onProgress(rowIndex + 1, workbookData.rows.length, `Проверка квалификации ${fileLabel}... ${rowIndex + 1}/${workbookData.rows.length}`);
-    if ((rowIndex + 1) % 100 === 0) await yieldToUi();
+    if ((rowIndex + 1) % 250 === 0) await yieldToUi();
   }
 
   return { issues };
@@ -1423,36 +1420,21 @@ function downloadWorkbookDataXlsx(workbookData, filename, sheetName) {
   XLSX.writeFile(wb, filename);
 }
 
-async function renderFixedPreview(pnOrig, pnFixed, viOrig, viFixed) {
+function renderFixedPreview(pnOrig, pnFixed, viOrig, viFixed) {
   if (!fixedTablesMount) return;
   fixedTablesMount.innerHTML = "";
 
-  const pnTotal = Math.max(pnOrig.rows.length, pnFixed.rows.length);
-  const viTotal = Math.max(viOrig.rows.length, viFixed.rows.length);
-  const denom = Math.max(1, pnTotal + viTotal);
-
-  const makeChunkProgress = (shortLabel, rowOffset) => (end, n) => {
-    const overall = rowOffset + end;
-    const pct = 98 + (99.5 - 98) * (overall / denom);
-    setProgress(pct, `Сборка таблиц исправлений (${shortLabel}): ${end}/${n}`);
-  };
-
+  setProgress(98, "Сборка таблицы исправлений (ПН)...");
   fixedTablesMount.appendChild(
-    await buildFixedTableSection("План набора (исправлено)", pnOrig, pnFixed, "pn_corrected.xlsx", "ПН", makeChunkProgress("ПН", 0))
+    buildFixedTableSection("План набора (исправлено)", pnOrig, pnFixed, "pn_corrected.xlsx", "ПН")
   );
+  setProgress(99, "Сборка таблицы исправлений (ВИ)...");
   fixedTablesMount.appendChild(
-    await buildFixedTableSection(
-      "Вступительные испытания (исправлено)",
-      viOrig,
-      viFixed,
-      "vi_corrected.xlsx",
-      "ВИ",
-      makeChunkProgress("ВИ", pnTotal)
-    )
+    buildFixedTableSection("Вступительные испытания (исправлено)", viOrig, viFixed, "vi_corrected.xlsx", "ВИ")
   );
 }
 
-async function buildFixedTableSection(title, origWb, fixedWb, downloadFilename, sheetLabel, onChunk) {
+function buildFixedTableSection(title, origWb, fixedWb, downloadFilename, sheetLabel) {
   const section = document.createElement("section");
   section.className = "fixed-table-section";
 
@@ -1471,7 +1453,7 @@ async function buildFixedTableSection(title, origWb, fixedWb, downloadFilename, 
 
   const scroll = document.createElement("div");
   scroll.className = "fixed-table-scroll";
-  scroll.appendChild(await buildFixedHtmlTable(origWb, fixedWb, onChunk));
+  scroll.appendChild(buildFixedHtmlTable(origWb, fixedWb));
 
   section.appendChild(h3);
   section.appendChild(toolbar);
@@ -1479,19 +1461,9 @@ async function buildFixedTableSection(title, origWb, fixedWb, downloadFilename, 
   return section;
 }
 
-/** Верхняя граница строк за кадр; фактическое число уменьшается при широкой таблице. */
-const FIXED_TABLE_BODY_CHUNK_ROWS_MAX = 28;
-/** Ориентир: не больше ~этого числа ячеек (td/th в строке данных) за один проход цикла. */
-const FIXED_TABLE_CELLS_PER_CHUNK_BUDGET = 2200;
-
-async function buildFixedHtmlTable(origWb, fixedWb, onChunk) {
+function buildFixedHtmlTable(origWb, fixedWb) {
   const twoLine = workbookDataHasTwoHeaderRows(origWb) && origWb.headerColumns && origWb.headerColumns.length;
   const dataRowStart1Based = twoLine ? 3 : 2;
-  const colCount = Math.max(1, origWb.headers.length);
-  const rowChunk = Math.max(
-    6,
-    Math.min(FIXED_TABLE_BODY_CHUNK_ROWS_MAX, Math.floor(FIXED_TABLE_CELLS_PER_CHUNK_BUDGET / colCount))
-  );
 
   const table = document.createElement("table");
   table.className = "fixed-data-table";
@@ -1532,35 +1504,29 @@ async function buildFixedHtmlTable(origWb, fixedWb, onChunk) {
     thead.appendChild(trh);
   }
   table.appendChild(thead);
-  await yieldToUi();
 
   const tbody = document.createElement("tbody");
   const n = Math.max(origWb.rows.length, fixedWb.rows.length);
-  for (let start = 0; start < n; start += rowChunk) {
-    const end = Math.min(start + rowChunk, n);
-    for (let i = start; i < end; i += 1) {
-      const origRow = origWb.rows[i] || {};
-      const fixedRow = fixedWb.rows[i] || {};
-      const tr = document.createElement("tr");
-      const rowHead = document.createElement("th");
-      rowHead.scope = "row";
-      rowHead.textContent = String(i + dataRowStart1Based);
-      tr.appendChild(rowHead);
-      for (const h of origWb.headers) {
-        const td = document.createElement("td");
-        const o = origRow[h] == null ? "" : String(origRow[h]);
-        const f = fixedRow[h] == null ? "" : String(fixedRow[h]);
-        td.textContent = f;
-        if (o !== f) {
-          td.classList.add("cell-corrected");
-          td.title = `Было: ${o}`;
-        }
-        tr.appendChild(td);
+  for (let i = 0; i < n; i += 1) {
+    const origRow = origWb.rows[i] || {};
+    const fixedRow = fixedWb.rows[i] || {};
+    const tr = document.createElement("tr");
+    const rowHead = document.createElement("th");
+    rowHead.scope = "row";
+    rowHead.textContent = String(i + dataRowStart1Based);
+    tr.appendChild(rowHead);
+    for (const h of origWb.headers) {
+      const td = document.createElement("td");
+      const o = origRow[h] == null ? "" : String(origRow[h]);
+      const f = fixedRow[h] == null ? "" : String(fixedRow[h]);
+      td.textContent = f;
+      if (o !== f) {
+        td.classList.add("cell-corrected");
+        td.title = `Было: ${o}`;
       }
-      tbody.appendChild(tr);
+      tr.appendChild(td);
     }
-    if (onChunk) onChunk(end, n);
-    if (end < n) await yieldToUi();
+    tbody.appendChild(tr);
   }
   table.appendChild(tbody);
   return table;
@@ -1726,12 +1692,14 @@ function setGlobalMessage(text, typeClass) {
 }
 
 function setProgress(percent, label) {
-  const safe = Math.max(0, Math.min(100, Math.round(percent)));
+  const clamped = Math.max(0, Math.min(100, percent));
   progressSectionNode.classList.remove("hidden");
   progressLabelNode.textContent = label;
-  progressPercentNode.textContent = `${safe}%`;
-  progressFillNode.style.width = `${safe}%`;
-  progressTrackNode.setAttribute("aria-valuenow", String(safe));
+  // Не округлять до целого: иначе длинные шаги (98–99.5) визуально «застывают» на одном проценте.
+  const displayPct = clamped >= 99.95 ? "100%" : `${clamped.toFixed(1)}%`;
+  progressPercentNode.textContent = displayPct;
+  progressFillNode.style.width = `${clamped}%`;
+  progressTrackNode.setAttribute("aria-valuenow", String(Math.round(clamped * 10) / 10));
 }
 
 function setUiBusy(isBusy) {
@@ -1740,12 +1708,9 @@ function setUiBusy(isBusy) {
   // Вкладки не отключаем: иначе во время проверки переключение не работает (disabled не получает click).
 }
 
+/** Лёгкая отдача потока; двойной rAF здесь многократно замедлял проверку на больших файлах. */
 async function yieldToUi() {
-  await new Promise((resolve) => {
-    requestAnimationFrame(() => {
-      requestAnimationFrame(resolve);
-    });
-  });
+  await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
 function setActiveTab(tab) {
