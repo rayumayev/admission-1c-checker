@@ -83,8 +83,11 @@ const benchmarkSectionNode = document.getElementById("benchmarkSection");
 const benchmarkListNode = document.getElementById("benchmarkList");
 const tabUploadButton = document.getElementById("tabUpload");
 const tabCriteriaButton = document.getElementById("tabCriteria");
+const tabFixedButton = document.getElementById("tabFixed");
 const uploadTabPanel = document.getElementById("uploadTabPanel");
 const criteriaTabPanel = document.getElementById("criteriaTabPanel");
+const fixedTabPanel = document.getElementById("fixedTabPanel");
+const fixedTablesMount = document.getElementById("fixedTablesMount");
 
 const checkedIssues = new Set();
 
@@ -92,6 +95,7 @@ Object.values(inputs).forEach((input) => input.addEventListener("change", update
 runCheckButton.addEventListener("click", onRunCheck);
 tabUploadButton.addEventListener("click", () => setActiveTab("upload"));
 tabCriteriaButton.addEventListener("click", () => setActiveTab("criteria"));
+tabFixedButton.addEventListener("click", () => setActiveTab("fixed"));
 updateRunButtonState();
 setActiveTab("upload");
 
@@ -102,6 +106,7 @@ function updateRunButtonState() {
   if (!allChosen) {
     criteriaResultsNode.classList.add("hidden");
     criteriaResultsNode.innerHTML = "";
+    clearFixedPreview();
   }
 }
 
@@ -109,6 +114,7 @@ async function onRunCheck() {
   clearGlobalMessage();
   criteriaResultsNode.classList.add("hidden");
   criteriaResultsNode.innerHTML = "";
+  clearFixedPreview();
   checkedIssues.clear();
   clearBenchmark();
   setUiBusy(true);
@@ -226,6 +232,9 @@ async function onRunCheck() {
     setProgress(97, "Формирование отчета по критериям...");
     perf.start("render", "Рендер отчета");
     renderCriteriaReports(criteria);
+    const pnCorrected = buildCorrectedPnData(pnWorkbookData, kgRules, benefitsRules);
+    const viCorrected = buildCorrectedViData(viWorkbookData, minBallData, spoMinBallData, benefitsRules, kgRules, viRules);
+    renderFixedPreview(pnWorkbookData, pnCorrected, viWorkbookData, viCorrected);
     perf.end("render");
     perf.render();
     setActiveTab("criteria");
@@ -245,6 +254,7 @@ async function onRunCheck() {
       setGlobalMessage("Проверка завершена.", "ok");
     }
   } catch (error) {
+    clearFixedPreview();
     setProgress(100, "Проверка завершена с ошибкой");
     setGlobalMessage(error.message || "Не удалось обработать файлы.", "error");
   } finally {
@@ -1004,6 +1014,274 @@ function isNo(value, rules) {
   return rules.noValues.includes(normalizeText(value));
 }
 
+function clearFixedPreview() {
+  if (!fixedTablesMount) return;
+  fixedTablesMount.innerHTML = "";
+  const hint = document.createElement("p");
+  hint.className = "note muted-fixed-hint";
+  hint.textContent = "Запустите проверку — после обработки файлов здесь появятся таблицы ПН и ВИ.";
+  fixedTablesMount.appendChild(hint);
+}
+
+function fixWhitespaceInCell(raw) {
+  return String(raw || "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function fixPipeSpacingAroundBars(kgName) {
+  if (kgName == null || kgName === "") return "";
+  return String(kgName).replace(/\s*\|\s*/g, "|");
+}
+
+function buildBenefitPatternsFromRules(benefitsRules) {
+  return (benefitsRules.replacements || []).map((item) => ({
+    fromNorm: normalizeBenefitText(item.from),
+    to: item.to
+  }));
+}
+
+function applyBenefitToValue(value, patterns) {
+  const matched = findBenefitReplacement(value, patterns);
+  return matched ? matched.to : null;
+}
+
+function expectedQualificationForLevel(level) {
+  const levelNorm = normalizeText(level);
+  if (levelNorm.includes("бакалавриат")) return "Бакалавр";
+  if (levelNorm.includes("магистратура")) return "Магистр";
+  return "-";
+}
+
+function buildCorrectedPnData(pnWorkbookData, kgRules, benefitsRules) {
+  const headers = pnWorkbookData.headers;
+  const patterns = buildBenefitPatternsFromRules(benefitsRules);
+  const h = {
+    kg: findHeader(headers, "Конкурсная группа"),
+    level: findHeader(headers, "Уровень образования"),
+    benefit: findHeader(headers, "Название льготы"),
+    specialMark: findHeader(headers, "Особая отметка"),
+    targetDetailed: findHeader(headers, "Целевая детализированная квота"),
+    rfOnly: findHeader(headers, "Только для граждан РФ"),
+    foreignOnly: findHeader(headers, "Только для иностранных граждан"),
+    specialFeature: findHeader(headers, kgRules.separateQuotaRule.specialFeatureColumn),
+    specialRight: findHeader(headers, kgRules.separateQuotaRule.specialRightColumn)
+  };
+  const qualH = findHeader(headers, "Квалификация");
+
+  const rows = pnWorkbookData.rows.map((row) => {
+    const next = {};
+    for (const header of headers) {
+      next[header] = fixWhitespaceInCell(row[header]);
+    }
+    if (h.kg && next[h.kg]) {
+      next[h.kg] = fixPipeSpacingAroundBars(next[h.kg]);
+    }
+    if (h.benefit && next[h.benefit]) {
+      const rep = applyBenefitToValue(next[h.benefit], patterns);
+      if (rep !== null) next[h.benefit] = rep;
+    }
+    if (h.specialMark && next[h.specialMark]) {
+      const rep = applyBenefitToValue(next[h.specialMark], patterns);
+      if (rep !== null) next[h.specialMark] = rep;
+    }
+    if (h.level && qualH) {
+      next[qualH] = expectedQualificationForLevel(getVal(next, h.level));
+    }
+    if (h.kg && h.targetDetailed && next[h.kg] && getVal(row, h.targetDetailed)) {
+      const should = containsToken(next[h.kg], kgRules.quotaTokens.target) ? "Да" : "Нет";
+      next[h.targetDetailed] = should;
+    }
+    if (h.rfOnly && getVal(row, h.rfOnly) && !isNo(getVal(next, h.rfOnly), kgRules)) {
+      next[h.rfOnly] = "Нет";
+    }
+    if (h.kg && h.foreignOnly && next[h.kg] && containsToken(next[h.kg], kgRules.quotaTokens.foreign)) {
+      if (!isYes(getVal(next, h.foreignOnly), kgRules)) {
+        next[h.foreignOnly] = "Да";
+      }
+    }
+    if (
+      h.specialFeature &&
+      h.specialRight &&
+      normalizeText(getVal(next, h.specialFeature)) === normalizeText(kgRules.separateQuotaRule.specialFeatureValue)
+    ) {
+      next[h.specialRight] = kgRules.separateQuotaRule.specialRightExpected;
+    }
+    return next;
+  });
+
+  return { headers, rows };
+}
+
+function buildCorrectedViData(viWorkbookData, minBallData, spoMinBallData, benefitsRules, kgRules, viRules) {
+  const headers = viWorkbookData.headers;
+  const patterns = buildBenefitPatternsFromRules(benefitsRules);
+  const subjectHeader = findHeader(headers, viRules.subjectColumn);
+  const replaceHeader = findHeader(headers, viRules.replaceSubjectColumn);
+  const minScoreHeader = findHeader(headers, viRules.minScoreColumn);
+  const maxScoreHeader = findHeader(headers, viRules.maxScoreColumn);
+  const testFormHeader = findHeader(headers, viRules.testFormColumn);
+  const targetHeader = findHeader(headers, viRules.targetColumn);
+  const specialMarkHeader = findHeader(headers, viRules.specialMarkColumn);
+  const levelHeader = findHeader(headers, "Уровень образования");
+  const qualHeader = findHeader(headers, "Квалификация");
+
+  const rows = viWorkbookData.rows.map((row) => {
+    const next = {};
+    for (const header of headers) {
+      next[header] = fixWhitespaceInCell(row[header]);
+    }
+
+    if (subjectHeader && replaceHeader) {
+      const base = next[subjectHeader];
+      const alt = next[replaceHeader];
+      if (base && spoMinBallData.spoMap.has(normalizeSpoSubjectKey(base)) && !String(alt || "").trim()) {
+        next[replaceHeader] = base;
+        next[subjectHeader] = "";
+      }
+    }
+
+    if (specialMarkHeader && next[specialMarkHeader]) {
+      const rep = applyBenefitToValue(next[specialMarkHeader], patterns);
+      if (rep !== null) next[specialMarkHeader] = rep;
+    }
+
+    if (levelHeader && qualHeader) {
+      next[qualHeader] = expectedQualificationForLevel(getVal(next, levelHeader));
+    }
+
+    const form = getVal(next, testFormHeader);
+    const formType = detectViFormType(form, viRules);
+    const targetFlag = getVal(next, targetHeader);
+    const isTarget = isYes(targetFlag, kgRules);
+
+    const maxRaw = maxScoreHeader ? next[maxScoreHeader] : "";
+    const maxScore = Number(String(maxRaw || "").replace(",", "."));
+
+    if (maxScoreHeader && !Number.isNaN(maxScore) && formType) {
+      const expectedMax = getExpectedMax(formType, isTarget, viRules);
+      if (expectedMax !== null) next[maxScoreHeader] = String(expectedMax);
+    }
+
+    if (minScoreHeader && formType === "id") {
+      next[minScoreHeader] = "0";
+    }
+
+    const chosenAfter = getVal(next, replaceHeader) || getVal(next, subjectHeader);
+    const altAfter = getVal(next, replaceHeader);
+
+    if (minScoreHeader && (formType === "ege" || formType === "exam") && chosenAfter) {
+      const resolved = resolveViMinScoreRef(chosenAfter, altAfter, minBallData, spoMinBallData);
+      if (resolved.kind === "ok") {
+        next[minScoreHeader] = String(resolved.score);
+      }
+    }
+
+    const minScore = Number(String(getVal(next, minScoreHeader) || "").replace(",", "."));
+    if (minScoreHeader && replaceHeader && minScore === 21) {
+      next[replaceHeader] = "";
+    }
+
+    return next;
+  });
+
+  return { headers, rows };
+}
+
+function workbookDataToSheet(workbookData) {
+  const { headers, rows } = workbookData;
+  const aoa = [headers, ...rows.map((r) => headers.map((h) => (r[h] == null ? "" : String(r[h]))))];
+  return XLSX.utils.aoa_to_sheet(aoa);
+}
+
+function downloadWorkbookDataXlsx(workbookData, filename, sheetName) {
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, workbookDataToSheet(workbookData), sheetName || "Лист1");
+  XLSX.writeFile(wb, filename);
+}
+
+function renderFixedPreview(pnOrig, pnFixed, viOrig, viFixed) {
+  if (!fixedTablesMount) return;
+  fixedTablesMount.innerHTML = "";
+
+  fixedTablesMount.appendChild(
+    buildFixedTableSection("План набора (исправлено)", pnOrig, pnFixed, "pn_corrected.xlsx", "ПН")
+  );
+  fixedTablesMount.appendChild(
+    buildFixedTableSection("Вступительные испытания (исправлено)", viOrig, viFixed, "vi_corrected.xlsx", "ВИ")
+  );
+}
+
+function buildFixedTableSection(title, origWb, fixedWb, downloadFilename, sheetLabel) {
+  const section = document.createElement("section");
+  section.className = "fixed-table-section";
+
+  const h3 = document.createElement("h3");
+  h3.textContent = title;
+
+  const toolbar = document.createElement("div");
+  toolbar.className = "fixed-table-toolbar";
+  const dl = document.createElement("button");
+  dl.type = "button";
+  dl.textContent = "Скачать .xlsx";
+  dl.addEventListener("click", () => {
+    downloadWorkbookDataXlsx(fixedWb, downloadFilename, sheetLabel);
+  });
+  toolbar.appendChild(dl);
+
+  const scroll = document.createElement("div");
+  scroll.className = "fixed-table-scroll";
+  scroll.appendChild(buildFixedHtmlTable(origWb, fixedWb));
+
+  section.appendChild(h3);
+  section.appendChild(toolbar);
+  section.appendChild(scroll);
+  return section;
+}
+
+function buildFixedHtmlTable(origWb, fixedWb) {
+  const table = document.createElement("table");
+  table.className = "fixed-data-table";
+  const thead = document.createElement("thead");
+  const trh = document.createElement("tr");
+  const corner = document.createElement("th");
+  corner.textContent = "Стр.";
+  trh.appendChild(corner);
+  for (const h of origWb.headers) {
+    const th = document.createElement("th");
+    th.textContent = h;
+    trh.appendChild(th);
+  }
+  thead.appendChild(trh);
+  table.appendChild(thead);
+
+  const tbody = document.createElement("tbody");
+  const n = Math.max(origWb.rows.length, fixedWb.rows.length);
+  for (let i = 0; i < n; i += 1) {
+    const origRow = origWb.rows[i] || {};
+    const fixedRow = fixedWb.rows[i] || {};
+    const tr = document.createElement("tr");
+    const rowHead = document.createElement("th");
+    rowHead.scope = "row";
+    rowHead.textContent = String(i + 2);
+    tr.appendChild(rowHead);
+    for (const h of origWb.headers) {
+      const td = document.createElement("td");
+      const o = origRow[h] == null ? "" : String(origRow[h]);
+      const f = fixedRow[h] == null ? "" : String(fixedRow[h]);
+      td.textContent = f;
+      if (o !== f) {
+        td.classList.add("cell-corrected");
+        td.title = `Было: ${o}`;
+      }
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  return table;
+}
+
 function renderCriteriaReports(criteria) {
   criteriaResultsNode.innerHTML = "";
   criteriaResultsNode.classList.remove("hidden");
@@ -1177,6 +1455,7 @@ function setUiBusy(isBusy) {
   runCheckButton.disabled = isBusy;
   tabUploadButton.disabled = isBusy;
   tabCriteriaButton.disabled = isBusy;
+  tabFixedButton.disabled = isBusy;
 }
 
 async function yieldToUi() {
@@ -1184,9 +1463,10 @@ async function yieldToUi() {
 }
 
 function setActiveTab(tab) {
-  const uploadActive = tab === "upload";
-  tabUploadButton.classList.toggle("is-active", uploadActive);
-  tabCriteriaButton.classList.toggle("is-active", !uploadActive);
-  uploadTabPanel.classList.toggle("is-active", uploadActive);
-  criteriaTabPanel.classList.toggle("is-active", !uploadActive);
+  tabUploadButton.classList.toggle("is-active", tab === "upload");
+  tabCriteriaButton.classList.toggle("is-active", tab === "criteria");
+  tabFixedButton.classList.toggle("is-active", tab === "fixed");
+  uploadTabPanel.classList.toggle("is-active", tab === "upload");
+  criteriaTabPanel.classList.toggle("is-active", tab === "criteria");
+  fixedTabPanel.classList.toggle("is-active", tab === "fixed");
 }
