@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="ru">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Проверка полей Excel</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+
+<body>
+  <main class="container">
+    <h1>Сравнение полей Excel</h1>
+    <div class="tabs">
+      <button id="tabUpload" class="tab-button is-active" type="button">Загрузка</button>
+      <button id="tabCriteria" class="tab-button" type="button">Критерии</button>
+    </div>
+
+    <section id="uploadTabPanel" class="tab-panel is-active">
+      <section class="grid">
+      <div class="panel">
+        <h2>Шаблоны</h2>
+        <div class="field">
+          <label for="pnTemplate">Шаблон ПН (`pn_template.xlsx`)</label>
+          <input id="pnTemplate" type="file" accept=".xlsx,.xls" />
+        </div>
+        <div class="field">
+          <label for="viTemplate">Шаблон ВИ (`vi_template.xlsx`)</label>
+          <input id="viTemplate" type="file" accept=".xlsx,.xls" />
+        </div>
+        <div class="field">
+          <label for="minBallFile">Эталон минимальных баллов (`min_ball.txt`)</label>
+          <input id="minBallFile" type="file" accept=".txt" />
+        </div>
+        <div class="field">
+          <label for="spoMinBallFile">Эталон минимальных баллов СПО (`spo_min_ball.txt`)</label>
+          <input id="spoMinBallFile" type="file" accept=".txt" />
+        </div>
+        <div class="field">
+          <label for="rulesFile">Единый конфиг правил (`rules.json`)</label>
+          <input id="rulesFile" type="file" accept=".json" />
+        </div>
+      </div>
+
+      <div class="panel">
+        <h2>Проверяемые файлы</h2>
+        <div class="field">
+          <label for="pnFile">Файл ПН (план набора)</label>
+          <input id="pnFile" type="file" accept=".xlsx,.xls" />
+        </div>
+        <div class="field">
+          <label for="viFile">Файл ВИ (вступительные испытания)</label>
+          <input id="viFile" type="file" accept=".xlsx,.xls" />
+        </div>
+        <p class="note">Работает полностью локально: все файлы выбираются вручную.</p>
+      </div>
+      </section>
+
+      <button id="runCheck" disabled>Проверить</button>
+      <section id="progressSection" class="progress hidden" aria-live="polite">
+        <div class="progress-meta">
+          <span id="progressLabel">Подготовка...</span>
+          <span id="progressPercent">0%</span>
+        </div>
+        <div class="progress-track" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+          <div id="progressFill" class="progress-fill"></div>
+        </div>
+      </section>
+      <section id="benchmarkSection" class="benchmark hidden">
+        <h3>Benchmark</h3>
+        <ul id="benchmarkList" class="benchmark-list"></ul>
+      </section>
+      <p id="globalMessage" class="summary"></p>
+    </section>
+
+    <section id="criteriaTabPanel" class="tab-panel">
+      <div class="panel">
+        <h2>Проверяемые критерии</h2>
+        <p class="note">
+          Отчет формируется по каждому критерию в виде спойлера.
+          Внутри можно отмечать исправленные пункты чекбоксом.
+        </p>
+        <div class="criteria-catalog">
+          <h3>Активные критерии</h3>
+          <p class="note"><strong>Файл План набора</strong></p>
+          <ul>
+            <li><strong>Соответствие столбцам</strong> — сверка заголовков файла ПН с шаблоном ПН.</li>
+            <li><strong>Корректность названий КГ</strong> — проверка токенов КГ по форме обучения, финансированию и квотам.</li>
+            <li><strong>Код направления в названии КГ</strong> — код из столбца `Код` должен присутствовать в названии КГ.</li>
+            <li><strong>Уровень образования в названии КГ</strong> — проверка сокращения уровня (например, `БВО`, `БАК`) в КГ.</li>
+            <li><strong>Правила иностранных КГ</strong> — для КГ с `ИН` проверяются поля гражданства (Да/Нет).</li>
+            <li><strong>Проверка столбца Только для граждан РФ</strong> — значение должно быть `Нет`.</li>
+            <li><strong>Проверка названий льгот</strong> — контроль корректных формулировок льгот по правилам.</li>
+            <li><strong>Целевая детализированная квота</strong> — для КГ с `|Ц|` должно быть `Да`, иначе `Нет`.</li>
+            <li><strong>Квалификация по уровню образования</strong> — для бакалавриата `Бакалавр`, для магистратуры `Магистр`, для остальных `-`, пустое значение недопустимо.</li>
+            <li><strong>Сверка ПН и ВИ</strong> — сравнение ПН и ВИ по ключевым полям и фиксация отсутствующих КГ в ВИ.</li>
+          </ul>
+          <p class="note"><strong>Файл Вступительные испытания</strong></p>
+          <ul>
+            <li><strong>Соответствие столбцам</strong> — сверка заголовков файла ВИ с шаблоном ВИ.</li>
+            <li><strong>Минимальные баллы ВИ</strong> — проверка значений минимальных баллов по `min_ball.txt` с учетом `Заменяемого предмета`.</li>
+            <li><strong>Максимальные баллы ВИ</strong> — проверка по типу `Форма испытания` (ЕГЭ/экзамен/ИД/ИД целевые).</li>
+            <li><strong>Правило 21 балла</strong> — контроль типа испытания и пустого `Заменяемого предмета`.</li>
+            <li><strong>Правило 41 балла (СПО)</strong> — значение допустимо только для предметов из секции `СПО:` в `min_ball.txt`.</li>
+            <li><strong>Русский язык для иностранных граждан</strong> — минимальный балл должен быть 41.</li>
+            <li><strong>Формулировки особой отметки</strong> — проверка по правилам замен формулировок.</li>
+            <li><strong>Квалификация по уровню образования</strong> — для бакалавриата `Бакалавр`, для магистратуры `Магистр`, для остальных `-`, пустое значение недопустимо.</li>
+          </ul>
+        </div>
+        <section id="criteriaResults" class="results hidden"></section>
+      </div>
+    </section>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+  <script src="./app.js"></script>
+</body>
+
+</html>
