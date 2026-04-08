@@ -570,6 +570,23 @@ function buildHeaderRowsFromUniquifiedLabels(headers) {
   return [row1, row2];
 }
 
+function resolveCompositeHeaderParts(tRaw, bRaw) {
+  const t = String(tRaw || "").trim();
+  const b = String(bRaw || "").trim();
+  let name = "";
+  if (t && b) {
+    name = normalizeText(t) === normalizeText(b) ? t : `${t} / ${b}`;
+  } else if (t && !b) {
+    name = t;
+  } else if (!t && b) {
+    name = b;
+  } else {
+    return { trimmed: "", topOnly: false };
+  }
+  const trimmed = String(name).trim();
+  return { trimmed, topOnly: Boolean(t && !b) };
+}
+
 function buildCompositeHeadersFromRows(row0, row1) {
   const maxCol = Math.max(row0.length, row1.length, 0);
   const p0 = padRowToLength(row0, maxCol);
@@ -582,18 +599,18 @@ function buildCompositeHeadersFromRows(row0, row1) {
   for (let i = 0; i < maxCol; i += 1) {
     const t = String(topFilled[i] || "").trim();
     const b = p1[i] == null ? "" : String(p1[i]).trim();
-    let name = "";
-    if (t && b) {
-      name = normalizeText(t) === normalizeText(b) ? t : `${t} / ${b}`;
-    } else if (t && !b) {
-      name = t;
-    } else if (!t && b) {
-      name = b;
-    } else {
-      continue;
-    }
-    const trimmed = String(name).trim();
+    const { trimmed, topOnly } = resolveCompositeHeaderParts(t, b);
     if (!trimmed) continue;
+
+    if (i > 0) {
+      const pt = String(topFilled[i - 1] || "").trim();
+      const pb = p1[i - 1] == null ? "" : String(p1[i - 1]).trim();
+      const prev = resolveCompositeHeaderParts(pt, pb);
+      if (prev.trimmed && topOnly && prev.topOnly && prev.trimmed === trimmed) {
+        continue;
+      }
+    }
+
     headers.push(uniquifyHeaderLabel(trimmed, usedNames));
     headerColumns.push(i);
   }
@@ -608,6 +625,10 @@ function buildLegacySingleRowHeaders(row0) {
   for (let i = 0; i < row0.length; i += 1) {
     const value = row0[i] == null ? "" : String(row0[i]).trim();
     if (!value) continue;
+    if (i > 0) {
+      const prevVal = row0[i - 1] == null ? "" : String(row0[i - 1]).trim();
+      if (prevVal && prevVal === value) continue;
+    }
     headers.push(uniquifyHeaderLabel(value, usedNames));
     headerColumns.push(i);
   }
@@ -823,13 +844,13 @@ async function runPnCriteriaChecks(pnWorkbookData, kgRules, benefitsRules, onPro
       { header: h.specialMark, value: specialMark }
     ].filter((entry) => entry.header && entry.value);
     for (const column of benefitColumns) {
-      const matched = findBenefitReplacement(column.value, benefitPatterns);
-      if (matched) {
+      const expected = applyBenefitToValue(column.value, benefitPatterns);
+      if (expected !== null) {
         benefitIssues.push(
           issue(
             "benefit-replace",
             rowRef,
-            `Некорректная формулировка в столбце "${column.header}". Найдено: "${String(column.value).trim()}". Значение должно быть заменено на "${matched.to}".`
+            `Некорректная формулировка в столбце "${column.header}". Найдено: "${String(column.value).trim()}". Значение должно быть заменено на "${expected}".`
           )
         );
       }
@@ -971,13 +992,13 @@ async function checkViCriteria(viWorkbookData, minBallData, spoMinBallData, bene
     }
 
     if (specialMark) {
-      const matched = findBenefitReplacement(specialMark, benefitPatterns);
-      if (matched) {
+      const expected = applyBenefitToValue(specialMark, benefitPatterns);
+      if (expected !== null) {
         specialMarkIssues.push(
           issue(
             "benefit-replace",
             rowRef,
-            `Некорректная формулировка в "Особая отметка". Найдено: "${String(specialMark).trim()}". Значение должно быть заменено на "${matched.to}".`
+            `Некорректная формулировка в "Особая отметка". Найдено: "${String(specialMark).trim()}". Значение должно быть заменено на "${expected}".`
           )
         );
       }
@@ -1296,9 +1317,35 @@ function buildBenefitPatternsFromRules(benefitsRules) {
   }));
 }
 
+/**
+ * Замены по rules.json для одной ячейки. Если в тексте несколько отметок через «;»,
+ * каждая часть сопоставляется отдельно, результат снова склеивается через «; ».
+ */
 function applyBenefitToValue(value, patterns) {
-  const matched = findBenefitReplacement(value, patterns);
-  return matched ? matched.to : null;
+  const trimmed = String(value ?? "").trim();
+  if (!trimmed) return null;
+
+  if (!trimmed.includes(";")) {
+    const matched = findBenefitReplacement(trimmed, patterns);
+    return matched ? matched.to : null;
+  }
+
+  const parts = trimmed
+    .split(";")
+    .map((p) => p.trim())
+    .filter((p) => p.length > 0);
+  if (parts.length === 0) return null;
+
+  let any = false;
+  const out = parts.map((part) => {
+    const matched = findBenefitReplacement(part, patterns);
+    if (matched) {
+      any = true;
+      return String(matched.to).trim();
+    }
+    return part;
+  });
+  return any ? out.join("; ") : null;
 }
 
 function expectedQualificationForLevel(level) {
