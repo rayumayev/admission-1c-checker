@@ -14,6 +14,7 @@
     <div class="tabs">
       <button id="tabUpload" class="tab-button is-active" type="button">Загрузка</button>
       <button id="tabCriteria" class="tab-button" type="button">Критерии</button>
+      <button id="tabFixed" class="tab-button" type="button">С исправлениями</button>
     </div>
 
     <section id="uploadTabPanel" class="tab-panel is-active">
@@ -71,6 +72,19 @@
         <ul id="benchmarkList" class="benchmark-list"></ul>
       </section>
       <p id="globalMessage" class="summary"></p>
+    </section>
+
+    <section id="fixedTabPanel" class="tab-panel">
+      <div class="panel fixed-preview">
+        <h2>Таблицы с исправлениями</h2>
+        <p class="note">
+          Здесь те же столбцы, что в загруженных Excel: автоматические правки (пробелы, название КГ, льготы, квалификация и др.).
+          Ячейки с изменениями подсвечены; наведите курсор, чтобы увидеть исходное значение.
+        </p>
+        <div id="fixedTablesMount" class="fixed-tables-mount">
+          <p class="note muted-fixed-hint">Запустите проверку — после обработки файлов здесь появятся таблицы ПН и ВИ.</p>
+        </div>
+      </div>
     </section>
 
     <section id="criteriaTabPanel" class="tab-panel">
