@@ -406,7 +406,9 @@ function readWorkbookDataFromArrayBuffer(arrayBuffer, sourceLabel) {
 
   const row1HasContent = row1.some((c) => String(c || "").trim() !== "");
   const mergedAcrossTwoHeaderRows = sheetHasMergedHeaderRows(firstSheet);
-  const useTwoRowHeader = row1HasContent || mergedAcrossTwoHeaderRows;
+  const secondRowIsProbablyData = sheetSecondRowLooksLikeDataNotSubHeader(row1);
+  const useTwoRowHeader =
+    !secondRowIsProbablyData && (mergedAcrossTwoHeaderRows || row1HasContent);
 
   let built;
   let firstDataRowIndex;
@@ -498,6 +500,22 @@ function expandHeaderRowsFromSheetMerges(sheet, row0, row1) {
 function sheetHasMergedHeaderRows(sheet) {
   const merges = sheet["!merges"] || [];
   return merges.some((m) => m.s.r <= 1 && m.e.r >= 1);
+}
+
+/**
+ * Вторая строка листа при однострочной шапке часто — уже данные (КГ с «|», длинные поля).
+ * Раньше любая непустая row1 включала режим двух строк шапки и ломала столбцы/проверки.
+ */
+function sheetSecondRowLooksLikeDataNotSubHeader(row1) {
+  if (!Array.isArray(row1) || !row1.length) return false;
+  for (const cell of row1) {
+    const s = String(cell ?? "").trim();
+    if (!s) continue;
+    if (s.length > 180) return true;
+    const pipes = (s.match(/\|/g) || []).length;
+    if (pipes >= 2 && s.length > 20) return true;
+  }
+  return false;
 }
 
 /** Для объединённых по горизонтали ячеек в 1-й строке шапки (например «Срок обучения» над V–W). */
