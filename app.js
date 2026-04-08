@@ -527,6 +527,17 @@ async function runPnCriteriaChecks(pnWorkbookData, kgRules, benefitsRules, onPro
     const specialMark = getVal(row, h.specialMark);
     const feature = getVal(row, h.specialFeature);
     const specialRight = getVal(row, h.specialRight);
+    const hasTokenSpacingIssue = hasPipeTokenSpacingIssue(kg);
+
+    if (hasTokenSpacingIssue) {
+      kgNameIssues.push(
+        issue(
+          "kg-token-spacing",
+          rowRef,
+          `В названии КГ "${kg}" есть пробелы рядом с разделителем "|". Укажите токены без пробелов (например, "|З|").`
+        )
+      );
+    }
 
     if (kg && code && !kg.includes(code)) {
       codeIssues.push(issue("code-missing-in-kg", rowRef, `Код "${code}" отсутствует в названии КГ "${kg}".`));
@@ -538,16 +549,16 @@ async function runPnCriteriaChecks(pnWorkbookData, kgRules, benefitsRules, onPro
     }
 
     const formToken = tokenByValue(form, kgRules.formTokens);
-    if (formToken && !containsToken(kg, formToken)) {
+    if (!hasTokenSpacingIssue && formToken && !containsToken(kg, formToken)) {
       kgNameIssues.push(issue("form-token", rowRef, `Форма обучения "${form}" не отражена в КГ (ожидали "${formToken}").`));
     }
 
     const financeToken = tokenByValue(finance, kgRules.financeTokens);
-    if (financeToken && !containsToken(kg, financeToken)) {
+    if (!hasTokenSpacingIssue && financeToken && !containsToken(kg, financeToken)) {
       kgNameIssues.push(issue("finance-token", rowRef, `Источник финансирования "${finance}" не отражен в КГ (ожидали "${financeToken}").`));
     }
 
-    if (containsToken(kg, kgRules.quotaTokens.foreign)) {
+    if (!hasTokenSpacingIssue && containsToken(kg, kgRules.quotaTokens.foreign)) {
       if (!isYes(foreignOnly, kgRules)) {
         foreignIssues.push(issue("foreign-only", rowRef, `КГ с "ИН": поле "Только для иностранных граждан" должно быть "Да".`));
       }
@@ -560,7 +571,7 @@ async function runPnCriteriaChecks(pnWorkbookData, kgRules, benefitsRules, onPro
       rfIssues.push(issue("rf-no", rowRef, `Поле "Только для граждан РФ" должно быть "Нет", сейчас "${rfOnly}".`));
     }
 
-    const hasTargetToken = containsToken(kg, kgRules.quotaTokens.target);
+    const hasTargetToken = !hasTokenSpacingIssue && containsToken(kg, kgRules.quotaTokens.target);
     if (targetDetailed) {
       const should = hasTargetToken ? "Да" : "Нет";
       if (normalizeText(targetDetailed) !== normalizeText(should)) {
@@ -570,7 +581,7 @@ async function runPnCriteriaChecks(pnWorkbookData, kgRules, benefitsRules, onPro
 
     const separateExpected = normalizeText(feature) === normalizeText(kgRules.separateQuotaRule.specialFeatureValue);
     if (separateExpected) {
-      if (!containsToken(kg, kgRules.quotaTokens.separate)) {
+      if (!hasTokenSpacingIssue && !containsToken(kg, kgRules.quotaTokens.separate)) {
         kgNameIssues.push(issue("separate-token", rowRef, `Для "Отдельная квота" в КГ должен быть токен "${kgRules.quotaTokens.separate}".`));
       }
       if (normalizeText(specialRight) !== normalizeText(kgRules.separateQuotaRule.specialRightExpected)) {
@@ -671,10 +682,25 @@ async function checkViCriteria(viWorkbookData, minBallData, spoMinBallData, bene
           minIssues.push(issue("empty-subjects", rowRef, "Не заполнены поля \"Предмет\" и \"Заменяемый предмет\"."));
         } else {
           const ref = minBallData.map.get(normalizeText(chosenSubject));
-          if (!ref) {
-            minIssues.push(issue("missing-reference", rowRef, `Некорректный минимальный балл по предмету "${chosenSubject}": отсутствует значение в min_ball.txt.`));
-          } else if (ref.score !== minScore) {
-            minIssues.push(issue("score-mismatch", rowRef, `Некорректный минимальный балл по предмету "${chosenSubject}": в файле ${minScore}, в min_ball.txt ${ref.score}.`));
+          const spoRef = spoMinBallData.spoMap.get(normalizeSpoSubjectKey(chosenSubject));
+          const matchedRef = ref || spoRef || null;
+          if (!matchedRef) {
+            minIssues.push(
+              issue(
+                "missing-reference",
+                rowRef,
+                `Некорректный минимальный балл по предмету "${chosenSubject}": отсутствует значение в min_ball.txt и spo_min_ball.txt.`
+              )
+            );
+          } else if (matchedRef.score !== minScore) {
+            const sourceName = ref ? "min_ball.txt" : "spo_min_ball.txt";
+            minIssues.push(
+              issue(
+                "score-mismatch",
+                rowRef,
+                `Некорректный минимальный балл по предмету "${chosenSubject}": в файле ${minScore}, в ${sourceName} ${matchedRef.score}.`
+              )
+            );
           }
         }
       }
@@ -924,6 +950,12 @@ function containsToken(kgName, token) {
   return text.includes(`|${t}|`) || text.includes(` ${t} `) || text.startsWith(`${t} `) || text.endsWith(` ${t}`) || text === t;
 }
 
+function hasPipeTokenSpacingIssue(kgName) {
+  if (!kgName) return false;
+  const text = String(kgName);
+  return /\|\s+/.test(text) || /\s+\|/.test(text);
+}
+
 function isYes(value, rules) {
   return rules.yesValues.includes(normalizeText(value));
 }
@@ -1015,6 +1047,7 @@ function getIssueTypeLabel(type) {
     "extra-column": "Лишние столбцы",
     "form-token": "Форма обучения в названии КГ",
     "finance-token": "Вид финансирования в названии КГ",
+    "kg-token-spacing": "Пробелы вокруг токенов в названии КГ",
     "separate-token": "Признак отдельной квоты",
     "special-right": "Особое право для отдельной квоты",
     "code-missing-in-kg": "Код направления в названии КГ",
