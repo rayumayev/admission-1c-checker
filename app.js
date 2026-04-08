@@ -510,6 +510,48 @@ function forwardFillTopRow(row0) {
   });
 }
 
+/** Одинаковые подписи столбцов ломают rowObj[header] и дают «цикл» из одного заголовка в превью. */
+function uniquifyHeaderLabel(base, used) {
+  const trimmed = String(base || "").trim();
+  if (!trimmed) return "";
+  let name = trimmed;
+  let n = 2;
+  while (used.has(name)) {
+    name = `${trimmed} (${n})`;
+    n += 1;
+  }
+  used.add(name);
+  return name;
+}
+
+/** Составной заголовок «родитель / дочерний»; иначе одна строка (в т.ч. «… (2)» после uniquify). */
+function splitCompositeHeaderLabel(full) {
+  const s = String(full || "").trim();
+  if (!s) return { kind: "empty" };
+  const m = s.match(/^(.+?)\s+\/\s+(.+)$/);
+  if (m) return { kind: "split", top: m[1].trim(), bottom: m[2].trim() };
+  return { kind: "single", text: s };
+}
+
+function buildHeaderRowsFromUniquifiedLabels(headers) {
+  const row1 = [];
+  const row2 = [];
+  for (const lab of headers) {
+    const sp = splitCompositeHeaderLabel(lab);
+    if (sp.kind === "split") {
+      row1.push(sp.top);
+      row2.push(sp.bottom);
+    } else if (sp.kind === "single") {
+      row1.push(sp.text);
+      row2.push("");
+    } else {
+      row1.push("");
+      row2.push("");
+    }
+  }
+  return [row1, row2];
+}
+
 function buildCompositeHeadersFromRows(row0, row1) {
   const maxCol = Math.max(row0.length, row1.length, 0);
   const p0 = padRowToLength(row0, maxCol);
@@ -517,6 +559,7 @@ function buildCompositeHeadersFromRows(row0, row1) {
   const topFilled = forwardFillTopRow(p0);
   const headers = [];
   const headerColumns = [];
+  const usedNames = new Set();
 
   for (let i = 0; i < maxCol; i += 1) {
     const t = String(topFilled[i] || "").trim();
@@ -533,7 +576,7 @@ function buildCompositeHeadersFromRows(row0, row1) {
     }
     const trimmed = String(name).trim();
     if (!trimmed) continue;
-    headers.push(trimmed);
+    headers.push(uniquifyHeaderLabel(trimmed, usedNames));
     headerColumns.push(i);
   }
 
@@ -543,33 +586,57 @@ function buildCompositeHeadersFromRows(row0, row1) {
 function buildLegacySingleRowHeaders(row0) {
   const headers = [];
   const headerColumns = [];
+  const usedNames = new Set();
   for (let i = 0; i < row0.length; i += 1) {
     const value = row0[i] == null ? "" : String(row0[i]).trim();
     if (!value) continue;
-    headers.push(value);
+    headers.push(uniquifyHeaderLabel(value, usedNames));
     headerColumns.push(i);
   }
   const maxCol = Math.max(row0.length, 1);
   return { headers, headerColumns, headerRawRows: null, maxCol };
 }
 
-function compareHeaders(templateHeaders, fileHeaders) {
-  const templateMap = createNormalizedMap(templateHeaders);
-  const fileMap = createNormalizedMap(fileHeaders);
-  const missing = [];
-  const extra = [];
-  for (const [n, original] of templateMap.entries()) if (!fileMap.has(n)) missing.push(original);
-  for (const [n, original] of fileMap.entries()) if (!templateMap.has(n)) extra.push(original);
-  return { missing, extra, matched: [] };
+/** Последний сегмент после « / » — как в шаблоне 1С, когда верхняя строка дублирует группу, а имя поля во второй. */
+function lastHeaderSegmentNormalized(header) {
+  const parts = String(header || "")
+    .split(/\s*\/\s*/)
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (!parts.length) return "";
+  return normalizeText(parts[parts.length - 1]);
 }
 
-function createNormalizedMap(headers) {
-  const map = new Map();
-  for (const h of headers) {
-    const n = normalizeText(h);
-    if (n && !map.has(n)) map.set(n, h);
+/**
+ * Шаблон с простыми именами столбцов vs файл с составными «Группа / Поле».
+ * Совпадение: полная строка или совпадение последних сегментов / простое имя с последним сегментом файла.
+ */
+function headerNamesCorrespondForComparison(templateHeader, fileHeader) {
+  const nt = normalizeText(templateHeader);
+  const nf = normalizeText(fileHeader);
+  if (nt && nf && nt === nf) return true;
+  const lastT = lastHeaderSegmentNormalized(templateHeader);
+  const lastF = lastHeaderSegmentNormalized(fileHeader);
+  if (lastT && lastF && lastT === lastF) return true;
+  if (nt && lastF && nt === lastF) return true;
+  if (nf && lastT && nf === lastT) return true;
+  return false;
+}
+
+function compareHeaders(templateHeaders, fileHeaders) {
+  const missing = [];
+  const extra = [];
+  for (const th of templateHeaders) {
+    if (!normalizeText(th)) continue;
+    const ok = fileHeaders.some((fh) => headerNamesCorrespondForComparison(th, fh));
+    if (!ok) missing.push(th);
   }
-  return map;
+  for (const fh of fileHeaders) {
+    if (!normalizeText(fh)) continue;
+    const ok = templateHeaders.some((th) => headerNamesCorrespondForComparison(th, fh));
+    if (!ok) extra.push(fh);
+  }
+  return { missing, extra, matched: [] };
 }
 
 async function readMinBallFromFile(file) {
@@ -1382,41 +1449,12 @@ function workbookDataHasTwoHeaderRows(workbookData) {
   );
 }
 
-/** Две строки для экспорта/HTML: forward-fill по 1-й строке + дублирование подписи при вертикальном объединении. */
-function buildExportHeaderRows(workbookData) {
-  if (!workbookData.headerRawRows || workbookData.headerRawRows.length < 2) return null;
-  const { headerRawRows, headerColumns } = workbookData;
-  if (!headerColumns || !headerColumns.length) return null;
-  const [r0, r1] = headerRawRows;
-  const maxCol = Math.max(r0.length, r1.length, 1);
-  const p0 = padRowToLength(r0, maxCol);
-  const p1 = padRowToLength(r1, maxCol);
-  const topFilled = forwardFillTopRow(p0);
-  const rowA = headerColumns.map((ci) => {
-    const raw = p0[ci] == null ? "" : String(p0[ci]).trim();
-    return raw || String(topFilled[ci] || "").trim();
-  });
-  const rowB = headerColumns.map((ci) => {
-    const b = p1[ci] == null ? "" : String(p1[ci]).trim();
-    if (b) return b;
-    const raw = p0[ci] == null ? "" : String(p0[ci]).trim();
-    const tf = String(topFilled[ci] || "").trim();
-    if (raw || tf) return raw || tf;
-    return "";
-  });
-  return [rowA, rowB];
-}
-
 function workbookDataToSheet(workbookData) {
   const { headers, rows } = workbookData;
   const aoa = [];
   if (workbookDataHasTwoHeaderRows(workbookData)) {
-    const pair = buildExportHeaderRows(workbookData);
-    if (pair) {
-      aoa.push(pair[0], pair[1]);
-    } else {
-      aoa.push(headers);
-    }
+    const [r1, r2] = buildHeaderRowsFromUniquifiedLabels(headers);
+    aoa.push(r1, r2);
   } else {
     aoa.push(headers);
   }
@@ -1481,27 +1519,30 @@ function buildFixedHtmlTable(origWb, fixedWb) {
   table.className = "fixed-data-table";
   const thead = document.createElement("thead");
   if (twoLine) {
-    const cols = origWb.headerColumns;
-    const pair = buildExportHeaderRows(origWb);
-    const rowA = pair ? pair[0] : cols.map((ci) => String(origWb.headerRawRows[0][ci] ?? ""));
-    const rowB = pair ? pair[1] : cols.map((ci) => String(origWb.headerRawRows[1][ci] ?? ""));
+    const labels = origWb.headers;
     const tr1 = document.createElement("tr");
     const corner1 = document.createElement("th");
     corner1.rowSpan = 2;
     corner1.textContent = "Стр.";
     tr1.appendChild(corner1);
-    for (let i = 0; i < cols.length; i += 1) {
-      const th = document.createElement("th");
-      th.textContent = rowA[i] == null ? "" : String(rowA[i]);
-      tr1.appendChild(th);
+    const tr2 = document.createElement("tr");
+    for (let i = 0; i < labels.length; i += 1) {
+      const sp = splitCompositeHeaderLabel(labels[i]);
+      if (sp.kind === "split") {
+        const thTop = document.createElement("th");
+        thTop.textContent = sp.top;
+        tr1.appendChild(thTop);
+        const thBot = document.createElement("th");
+        thBot.textContent = sp.bottom;
+        tr2.appendChild(thBot);
+      } else {
+        const th = document.createElement("th");
+        th.rowSpan = 2;
+        th.textContent = sp.kind === "single" ? sp.text : "";
+        tr1.appendChild(th);
+      }
     }
     thead.appendChild(tr1);
-    const tr2 = document.createElement("tr");
-    for (let i = 0; i < cols.length; i += 1) {
-      const th = document.createElement("th");
-      th.textContent = rowB[i] == null ? "" : String(rowB[i]);
-      tr2.appendChild(th);
-    }
     thead.appendChild(tr2);
   } else {
     const trh = document.createElement("tr");
