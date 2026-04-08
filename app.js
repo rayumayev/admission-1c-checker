@@ -61,6 +61,12 @@ const DEFAULT_VI_RULES = {
   creativeTypeValue: "Дополнительное испытание творческой и (или) профессиональной направленности"
 };
 
+/** Защита от зависаний на «случайных» мегабайтных ячейках Excel (нормализация и .includes по ним линейно дороги). */
+const MAX_NORMALIZE_CHARS = 65536;
+
+/** Реже, чем каждые 200 строк — меньше накладных расходов await на больших файлах. */
+const CHECK_LOOP_YIELD_EVERY = 800;
+
 const inputs = {
   pnTemplate: document.getElementById("pnTemplate"),
   viTemplate: document.getElementById("viTemplate"),
@@ -339,6 +345,8 @@ function createProgressReporter() {
       setProgress(start, label);
     },
     step(done, total, label) {
+      // Подпись с номером строки обновляем всегда — иначе при троттлинге 40 мс кажется, что зависло на «5538/10451».
+      if (progressLabelNode) progressLabelNode.textContent = label;
       const now = Date.now();
       if (now - lastTickMs < 40 && done < total) return;
       lastTickMs = now;
@@ -429,7 +437,9 @@ function readWorkbookDataFromArrayBuffer(arrayBuffer, sourceLabel) {
 }
 
 function normalizeText(value) {
-  return String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
+  let s = String(value || "");
+  if (s.length > MAX_NORMALIZE_CHARS) s = s.slice(0, MAX_NORMALIZE_CHARS);
+  return s.replace(/\s+/g, " ").trim().toLowerCase();
 }
 
 function padRowToLength(row, len) {
@@ -740,7 +750,7 @@ async function runPnCriteriaChecks(pnWorkbookData, kgRules, benefitsRules, onPro
       }
     }
     if (onProgress) onProgress(idx + 1, rows.length, `Проверка критериев ПН... ${idx + 1}/${rows.length}`);
-    if ((idx + 1) % 200 === 0) await yieldToUi();
+    if ((idx + 1) % CHECK_LOOP_YIELD_EVERY === 0) await yieldToUi();
   }
 
   return { kgNameIssues, codeIssues, levelIssues, foreignIssues, rfIssues, benefitIssues, targetDetailedIssues };
@@ -888,7 +898,7 @@ async function checkViCriteria(viWorkbookData, minBallData, spoMinBallData, bene
       }
     }
     if (onProgress) onProgress(index + 1, viWorkbookData.rows.length, `Проверка критериев ВИ... ${index + 1}/${viWorkbookData.rows.length}`);
-    if ((index + 1) % 200 === 0) await yieldToUi();
+    if ((index + 1) % CHECK_LOOP_YIELD_EVERY === 0) await yieldToUi();
   }
 
   return { maxIssues, minIssues, rule21Issues, rule41Issues, spoColumnIssues, specialMarkIssues };
@@ -918,7 +928,7 @@ async function checkWhitespaceIssues(workbookData, fileLabel, onProgress) {
       }
     }
     if (onProgress) onProgress(rowIndex + 1, workbookData.rows.length, `Проверка пробелов ${fileLabel}... ${rowIndex + 1}/${workbookData.rows.length}`);
-    if ((rowIndex + 1) % 250 === 0) await yieldToUi();
+    if ((rowIndex + 1) % CHECK_LOOP_YIELD_EVERY === 0) await yieldToUi();
   }
   return { issues };
 }
@@ -955,7 +965,7 @@ async function checkQualificationByLevel(workbookData, fileLabel, onProgress) {
     }
 
     if (onProgress) onProgress(rowIndex + 1, workbookData.rows.length, `Проверка квалификации ${fileLabel}... ${rowIndex + 1}/${workbookData.rows.length}`);
-    if ((rowIndex + 1) % 250 === 0) await yieldToUi();
+    if ((rowIndex + 1) % CHECK_LOOP_YIELD_EVERY === 0) await yieldToUi();
   }
 
   return { issues };
@@ -978,7 +988,8 @@ function getExpectedMax(formType, isTarget, viRules) {
 }
 
 function normalizeSpoSubjectKey(subject) {
-  const raw = String(subject || "").trim();
+  let raw = String(subject || "").trim();
+  if (raw.length > MAX_NORMALIZE_CHARS) raw = raw.slice(0, MAX_NORMALIZE_CHARS);
   const withoutPrefix = raw.replace(/^\s*спо\s*[:;,-]?\s*/i, "");
   return normalizeText(withoutPrefix);
 }
@@ -1012,7 +1023,9 @@ function resolveViMinScoreRef(chosenSubject, altSubject, minBallData, spoMinBall
 }
 
 function normalizeBenefitText(value) {
-  return String(value || "")
+  let s = String(value || "");
+  if (s.length > MAX_NORMALIZE_CHARS) s = s.slice(0, MAX_NORMALIZE_CHARS);
+  return s
     .replace(/\u00A0/g, " ")
     .replace(/\s+/g, " ")
     .trim()
@@ -1073,7 +1086,7 @@ async function checkPnViMatch(pnWorkbookData, viWorkbookData, rules, onProgress)
       }
     }
     if (onProgress) onProgress(index + 1, pnWorkbookData.rows.length, `Сверка ПН и ВИ... ${index + 1}/${pnWorkbookData.rows.length}`);
-    if ((index + 1) % 200 === 0) await yieldToUi();
+    if ((index + 1) % CHECK_LOOP_YIELD_EVERY === 0) await yieldToUi();
   }
 
   return { issues };
@@ -1142,10 +1155,9 @@ function tokenByValue(value, map) {
  * Без замены на ASCII | не срабатывает удаление пробелов у разделителей.
  */
 function normalizeKgVerticalBarsToAscii(value) {
-  return String(value || "")
-    .replace(/\uFF5C/g, "|")
-    .replace(/\u2223/g, "|")
-    .replace(/\u2502/g, "|");
+  let s = String(value || "");
+  if (s.length > MAX_NORMALIZE_CHARS) s = s.slice(0, MAX_NORMALIZE_CHARS);
+  return s.replace(/\uFF5C/g, "|").replace(/\u2223/g, "|").replace(/\u2502/g, "|");
 }
 
 function containsToken(kgName, token) {
