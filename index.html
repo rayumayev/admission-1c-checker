@@ -11,13 +11,13 @@
 <body>
   <main class="container">
     <h1>Сравнение полей Excel</h1>
-    <div class="tabs">
-      <button id="tabUpload" class="tab-button is-active" type="button">Загрузка</button>
-      <button id="tabCriteria" class="tab-button" type="button">Критерии</button>
-      <button id="tabFixed" class="tab-button" type="button">С исправлениями</button>
+    <div class="tabs" role="tablist" aria-label="Разделы">
+      <button id="tabUpload" class="tab-button is-active" type="button" role="tab" aria-selected="true" aria-controls="uploadTabPanel">Загрузка</button>
+      <button id="tabCriteria" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="criteriaTabPanel">Критерии</button>
+      <button id="tabFixed" class="tab-button tab-button-fixed" type="button" role="tab" aria-selected="false" aria-controls="fixedTabPanel" title="Таблицы ПН и ВИ с автоматическими исправлениями">Исправления</button>
     </div>
 
-    <section id="uploadTabPanel" class="tab-panel is-active">
+    <section id="uploadTabPanel" class="tab-panel is-active" role="tabpanel" aria-labelledby="tabUpload">
       <section class="grid">
       <div class="panel">
         <h2>Шаблоны</h2>
@@ -53,7 +53,7 @@
           <label for="viFile">Файл ВИ (вступительные испытания)</label>
           <input id="viFile" type="file" accept=".xlsx,.xls" />
         </div>
-        <p class="note">Работает полностью локально: все файлы выбираются вручную.</p>
+        <p class="note">Работает полностью локально: все файлы выбираются вручную. Шапка Excel может занимать две строки (как в типовом ПН: объединённые ячейки и подзаголовки, например «Срок обучения» / «Количество лет», «Количество месяцев») — это учитывается при чтении, в таблице «Исправления» и при скачивании .xlsx.</p>
       </div>
       </section>
 
@@ -74,20 +74,22 @@
       <p id="globalMessage" class="summary"></p>
     </section>
 
-    <section id="fixedTabPanel" class="tab-panel">
+    <section id="fixedTabPanel" class="tab-panel" role="tabpanel" aria-labelledby="tabFixed">
       <div class="panel fixed-preview">
-        <h2>Таблицы с исправлениями</h2>
+        <h2>Исправления (ПН и ВИ)</h2>
         <p class="note">
           Здесь те же столбцы, что в загруженных Excel: автоматические правки (пробелы, название КГ, льготы, квалификация и др.).
           Ячейки с изменениями подсвечены; наведите курсор, чтобы увидеть исходное значение.
         </p>
         <div id="fixedTablesMount" class="fixed-tables-mount">
-          <p class="note muted-fixed-hint">Запустите проверку — после обработки файлов здесь появятся таблицы ПН и ВИ.</p>
+          <div class="fixed-empty-placeholder">
+            <p><strong>Сначала выполните проверку.</strong> На вкладке «Загрузка» выберите все файлы и нажмите «Проверить» — затем здесь появятся таблицы ПН и ВИ с подсветкой изменённых ячеек.</p>
+          </div>
         </div>
       </div>
     </section>
 
-    <section id="criteriaTabPanel" class="tab-panel">
+    <section id="criteriaTabPanel" class="tab-panel" role="tabpanel" aria-labelledby="tabCriteria">
       <div class="panel">
         <h2>Проверяемые критерии</h2>
         <p class="note">
