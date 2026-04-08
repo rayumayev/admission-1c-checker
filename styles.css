@@ -42,6 +42,21 @@ body {
   margin: 0;
 }
 
+.fixed-empty-placeholder {
+  margin: 0;
+  padding: 16px 18px;
+  border: 1px dashed #c4d4ec;
+  border-radius: 12px;
+  background: #f8fbff;
+  color: var(--text);
+  line-height: 1.5;
+  font-size: 0.95rem;
+}
+
+.fixed-empty-placeholder p {
+  margin: 0;
+}
+
 .fixed-table-section {
   margin: 20px 0 28px;
 }
@@ -122,9 +137,16 @@ h4 {
 }
 
 .tabs {
-  display: inline-flex;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 8px;
   margin: 12px 0 8px;
+  width: 100%;
+}
+
+.tab-button-fixed {
+  font-weight: 700;
 }
 
 .tab-button {

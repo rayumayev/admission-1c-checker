@@ -95,7 +95,7 @@ Object.values(inputs).forEach((input) => input.addEventListener("change", update
 runCheckButton.addEventListener("click", onRunCheck);
 tabUploadButton.addEventListener("click", () => setActiveTab("upload"));
 tabCriteriaButton.addEventListener("click", () => setActiveTab("criteria"));
-tabFixedButton.addEventListener("click", () => setActiveTab("fixed"));
+if (tabFixedButton) tabFixedButton.addEventListener("click", () => setActiveTab("fixed"));
 updateRunButtonState();
 setActiveTab("upload");
 
@@ -237,7 +237,8 @@ async function onRunCheck() {
     renderFixedPreview(pnWorkbookData, pnCorrected, viWorkbookData, viCorrected);
     perf.end("render");
     perf.render();
-    setActiveTab("criteria");
+    if (fixedTabPanel && tabFixedButton) setActiveTab("fixed");
+    else setActiveTab("criteria");
 
     const warnings = [
       ...pnTemplateHeaders.warnings,
@@ -390,19 +391,30 @@ function readWorkbookDataFromArrayBuffer(arrayBuffer, sourceLabel) {
   const sheetRows = XLSX.utils.sheet_to_json(firstSheet, { header: 1, raw: false, blankrows: false });
   if (!sheetRows || sheetRows.length === 0) throw new Error(`${sourceLabel}: на первом листе нет данных.`);
 
-  const firstRow = Array.isArray(sheetRows[0]) ? sheetRows[0] : [];
-  const headers = [];
-  const headerColumns = [];
-  for (let i = 0; i < firstRow.length; i += 1) {
-    const value = firstRow[i] == null ? "" : String(firstRow[i]).trim();
-    if (!value) continue;
-    headers.push(value);
-    headerColumns.push(i);
+  let row0 = Array.isArray(sheetRows[0]) ? sheetRows[0] : [];
+  let row1 = sheetRows.length > 1 && Array.isArray(sheetRows[1]) ? sheetRows[1] : [];
+  [row0, row1] = expandHeaderRowsFromSheetMerges(firstSheet, row0, row1);
+
+  const row1HasContent = row1.some((c) => String(c || "").trim() !== "");
+  const mergedAcrossTwoHeaderRows = sheetHasMergedHeaderRows(firstSheet);
+  const useTwoRowHeader = row1HasContent || mergedAcrossTwoHeaderRows;
+
+  let built;
+  let firstDataRowIndex;
+  if (useTwoRowHeader) {
+    built = buildCompositeHeadersFromRows(row0, row1);
+    firstDataRowIndex = 2;
+  } else {
+    built = buildLegacySingleRowHeaders(row0);
+    firstDataRowIndex = 1;
   }
+
+  const { headers, headerColumns, headerRawRows, maxCol } = built;
   if (headers.length === 0) throw new Error(`${sourceLabel}: не найдено ни одного валидного заголовка.`);
+  // Строк данных может не быть (например шаблон ПН только с шапкой) — это нормально; проверка содержимого — по основному файлу.
 
   const rows = [];
-  for (let rowIndex = 1; rowIndex < sheetRows.length; rowIndex += 1) {
+  for (let rowIndex = firstDataRowIndex; rowIndex < sheetRows.length; rowIndex += 1) {
     const row = Array.isArray(sheetRows[rowIndex]) ? sheetRows[rowIndex] : [];
     const rowObj = {};
     headers.forEach((header, idx) => {
@@ -411,11 +423,123 @@ function readWorkbookDataFromArrayBuffer(arrayBuffer, sourceLabel) {
     });
     rows.push(rowObj);
   }
-  return { headers, rows, warnings: [] };
+  const headerRowCount = useTwoRowHeader ? 2 : 1;
+  return { headers, rows, warnings: [], headerRawRows, headerColumns, maxCol, headerRowCount };
 }
 
 function normalizeText(value) {
   return String(value || "").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function padRowToLength(row, len) {
+  const arr = Array.isArray(row) ? row : [];
+  const out = [];
+  for (let i = 0; i < len; i += 1) out.push(i < arr.length ? arr[i] : undefined);
+  return out;
+}
+
+function getSheetCellDisplay(sheet, r, c) {
+  const addr = XLSX.utils.encode_cell({ r, c });
+  const cell = sheet[addr];
+  if (!cell || cell.t === "z") return "";
+  if (cell.w != null) return String(cell.w).trim();
+  if (cell.v != null) return String(cell.v).trim();
+  return "";
+}
+
+/** Подставляет текст из master-ячейки во все клетки объединения (иначе вторая строка шапки часто пустая). */
+function expandHeaderRowsFromSheetMerges(sheet, row0, row1) {
+  let refEndCol = 0;
+  const ref = sheet["!ref"];
+  if (ref) {
+    try {
+      refEndCol = XLSX.utils.decode_range(ref).e.c + 1;
+    } catch (_e) {
+      refEndCol = 0;
+    }
+  }
+  const len = Math.max(row0.length, row1.length, refEndCol, 1);
+  const p0 = padRowToLength(row0, len);
+  const p1 = padRowToLength(row1, len);
+  const merges = sheet["!merges"] || [];
+  merges.forEach((m) => {
+    const { s, e } = m;
+    if (s.r > 1) return;
+    const txt = getSheetCellDisplay(sheet, s.r, s.c);
+    if (!txt) return;
+    const endRow = Math.min(e.r, 1);
+    for (let r = Math.max(0, s.r); r <= endRow; r += 1) {
+      for (let c = s.c; c <= e.c; c += 1) {
+        if (r === 0) {
+          const cur = p0[c] == null ? "" : String(p0[c]).trim();
+          if (!cur) p0[c] = txt;
+        }
+        if (r === 1) {
+          const cur = p1[c] == null ? "" : String(p1[c]).trim();
+          if (!cur) p1[c] = txt;
+        }
+      }
+    }
+  });
+  return [p0, p1];
+}
+
+function sheetHasMergedHeaderRows(sheet) {
+  const merges = sheet["!merges"] || [];
+  return merges.some((m) => m.s.r <= 1 && m.e.r >= 1);
+}
+
+/** Для объединённых по горизонтали ячеек в 1-й строке шапки (например «Срок обучения» над V–W). */
+function forwardFillTopRow(row0) {
+  let last = "";
+  return row0.map((cell) => {
+    const v = cell == null ? "" : String(cell).trim();
+    if (v) last = v;
+    return v || last;
+  });
+}
+
+function buildCompositeHeadersFromRows(row0, row1) {
+  const maxCol = Math.max(row0.length, row1.length, 0);
+  const p0 = padRowToLength(row0, maxCol);
+  const p1 = padRowToLength(row1, maxCol);
+  const topFilled = forwardFillTopRow(p0);
+  const headers = [];
+  const headerColumns = [];
+
+  for (let i = 0; i < maxCol; i += 1) {
+    const t = String(topFilled[i] || "").trim();
+    const b = p1[i] == null ? "" : String(p1[i]).trim();
+    let name = "";
+    if (t && b) {
+      name = normalizeText(t) === normalizeText(b) ? t : `${t} / ${b}`;
+    } else if (t && !b) {
+      name = t;
+    } else if (!t && b) {
+      name = b;
+    } else {
+      continue;
+    }
+    const trimmed = String(name).trim();
+    if (!trimmed) continue;
+    headers.push(trimmed);
+    headerColumns.push(i);
+  }
+
+  return { headers, headerColumns, headerRawRows: [p0, p1], maxCol };
+}
+
+function buildLegacySingleRowHeaders(row0) {
+  const headers = [];
+  const headerColumns = [];
+  for (let i = 0; i < row0.length; i += 1) {
+    const value = row0[i] == null ? "" : String(row0[i]).trim();
+    if (!value) continue;
+    headers.push(value);
+    headerColumns.push(i);
+  }
+  const maxCol = Math.max(row0.length, 1);
+  return { headers, headerColumns, headerRawRows: null, maxCol };
 }
 
 function compareHeaders(templateHeaders, fileHeaders) {
@@ -579,7 +703,8 @@ async function runPnCriteriaChecks(pnWorkbookData, kgRules, benefitsRules, onPro
       rfIssues.push(issue("rf-no", rowRef, `Поле "Только для граждан РФ" должно быть "Нет", сейчас "${rfOnly}".`));
     }
 
-    const hasTargetToken = !hasTokenSpacingIssue && containsToken(kg, kgRules.quotaTokens.target);
+    // Токен «Ц» ищем всегда по строке КГ; пробелы у «|» — отдельная ошибка kg-token-spacing и не должны обнулять признак целевой квоты.
+    const hasTargetToken = containsToken(kg, kgRules.quotaTokens.target);
     if (targetDetailed) {
       const should = hasTargetToken ? "Да" : "Нет";
       if (normalizeText(targetDetailed) !== normalizeText(should)) {
@@ -977,7 +1102,25 @@ function ensureIssues(result) {
 
 function findHeader(headers, expectedName) {
   const target = normalizeText(expectedName);
-  return headers.find((h) => normalizeText(h) === target) || null;
+  if (!target) return null;
+
+  for (const h of headers) {
+    if (normalizeText(h) === target) return h;
+  }
+
+  const byLastSegment = headers.filter((h) => {
+    const parts = String(h)
+      .split(/\s*\/\s*/)
+      .map((p) => normalizeText(p.trim()))
+      .filter(Boolean);
+    return parts.length > 0 && parts[parts.length - 1] === target;
+  });
+  if (byLastSegment.length === 1) return byLastSegment[0];
+
+  const byIncludes = headers.filter((h) => normalizeText(h).includes(target));
+  if (byIncludes.length === 1) return byIncludes[0];
+
+  return null;
 }
 
 function getVal(row, header) {
@@ -993,16 +1136,27 @@ function tokenByValue(value, map) {
   return "";
 }
 
+/**
+ * Excel/Word часто подставляют не ASCII U+007C, а полноширинную черту U+FF5C и др.
+ * Без замены на ASCII | не срабатывает удаление пробелов у разделителей.
+ */
+function normalizeKgVerticalBarsToAscii(value) {
+  return String(value || "")
+    .replace(/\uFF5C/g, "|")
+    .replace(/\u2223/g, "|")
+    .replace(/\u2502/g, "|");
+}
+
 function containsToken(kgName, token) {
   if (!kgName || !token) return false;
-  const text = String(kgName).toUpperCase();
+  const text = normalizeKgVerticalBarsToAscii(kgName).toUpperCase();
   const t = String(token).toUpperCase();
   return text.includes(`|${t}|`) || text.includes(` ${t} `) || text.startsWith(`${t} `) || text.endsWith(` ${t}`) || text === t;
 }
 
 function hasPipeTokenSpacingIssue(kgName) {
   if (!kgName) return false;
-  const text = String(kgName);
+  const text = normalizeKgVerticalBarsToAscii(kgName);
   return /\|\s+/.test(text) || /\s+\|/.test(text);
 }
 
@@ -1017,10 +1171,13 @@ function isNo(value, rules) {
 function clearFixedPreview() {
   if (!fixedTablesMount) return;
   fixedTablesMount.innerHTML = "";
-  const hint = document.createElement("p");
-  hint.className = "note muted-fixed-hint";
-  hint.textContent = "Запустите проверку — после обработки файлов здесь появятся таблицы ПН и ВИ.";
-  fixedTablesMount.appendChild(hint);
+  const wrap = document.createElement("div");
+  wrap.className = "fixed-empty-placeholder";
+  const p = document.createElement("p");
+  p.innerHTML =
+    "<strong>Сначала выполните проверку.</strong> На вкладке «Загрузка» выберите все файлы и нажмите «Проверить» — затем здесь появятся таблицы ПН и ВИ с подсветкой изменённых ячеек.";
+  wrap.appendChild(p);
+  fixedTablesMount.appendChild(wrap);
 }
 
 function fixWhitespaceInCell(raw) {
@@ -1031,7 +1188,7 @@ function fixWhitespaceInCell(raw) {
 
 function fixPipeSpacingAroundBars(kgName) {
   if (kgName == null || kgName === "") return "";
-  return String(kgName).replace(/\s*\|\s*/g, "|");
+  return normalizeKgVerticalBarsToAscii(kgName).replace(/\s*\|\s*/g, "|");
 }
 
 function buildBenefitPatternsFromRules(benefitsRules) {
@@ -1110,7 +1267,14 @@ function buildCorrectedPnData(pnWorkbookData, kgRules, benefitsRules) {
     return next;
   });
 
-  return { headers, rows };
+  return {
+    headers,
+    rows,
+    headerRawRows: pnWorkbookData.headerRawRows,
+    headerColumns: pnWorkbookData.headerColumns,
+    maxCol: pnWorkbookData.maxCol,
+    headerRowCount: pnWorkbookData.headerRowCount
+  };
 }
 
 function buildCorrectedViData(viWorkbookData, minBallData, spoMinBallData, benefitsRules, kgRules, viRules) {
@@ -1185,12 +1349,67 @@ function buildCorrectedViData(viWorkbookData, minBallData, spoMinBallData, benef
     return next;
   });
 
-  return { headers, rows };
+  return {
+    headers,
+    rows,
+    headerRawRows: viWorkbookData.headerRawRows,
+    headerColumns: viWorkbookData.headerColumns,
+    maxCol: viWorkbookData.maxCol,
+    headerRowCount: viWorkbookData.headerRowCount
+  };
+}
+
+function workbookDataHasTwoHeaderRows(workbookData) {
+  if (!workbookData) return false;
+  if (workbookData.headerRowCount === 2) return true;
+  return Boolean(
+    workbookData.headerRawRows &&
+      workbookData.headerRawRows.length >= 2 &&
+      workbookData.headerRawRows[1].some((c) => String(c || "").trim() !== "")
+  );
+}
+
+/** Две строки для экспорта/HTML: forward-fill по 1-й строке + дублирование подписи при вертикальном объединении. */
+function buildExportHeaderRows(workbookData) {
+  if (!workbookData.headerRawRows || workbookData.headerRawRows.length < 2) return null;
+  const { headerRawRows, headerColumns } = workbookData;
+  if (!headerColumns || !headerColumns.length) return null;
+  const [r0, r1] = headerRawRows;
+  const maxCol = Math.max(r0.length, r1.length, 1);
+  const p0 = padRowToLength(r0, maxCol);
+  const p1 = padRowToLength(r1, maxCol);
+  const topFilled = forwardFillTopRow(p0);
+  const rowA = headerColumns.map((ci) => {
+    const raw = p0[ci] == null ? "" : String(p0[ci]).trim();
+    return raw || String(topFilled[ci] || "").trim();
+  });
+  const rowB = headerColumns.map((ci) => {
+    const b = p1[ci] == null ? "" : String(p1[ci]).trim();
+    if (b) return b;
+    const raw = p0[ci] == null ? "" : String(p0[ci]).trim();
+    const tf = String(topFilled[ci] || "").trim();
+    if (raw || tf) return raw || tf;
+    return "";
+  });
+  return [rowA, rowB];
 }
 
 function workbookDataToSheet(workbookData) {
   const { headers, rows } = workbookData;
-  const aoa = [headers, ...rows.map((r) => headers.map((h) => (r[h] == null ? "" : String(r[h]))))];
+  const aoa = [];
+  if (workbookDataHasTwoHeaderRows(workbookData)) {
+    const pair = buildExportHeaderRows(workbookData);
+    if (pair) {
+      aoa.push(pair[0], pair[1]);
+    } else {
+      aoa.push(headers);
+    }
+  } else {
+    aoa.push(headers);
+  }
+  for (const r of rows) {
+    aoa.push(headers.map((h) => (r[h] == null ? "" : String(r[h]))));
+  }
   return XLSX.utils.aoa_to_sheet(aoa);
 }
 
@@ -1240,19 +1459,47 @@ function buildFixedTableSection(title, origWb, fixedWb, downloadFilename, sheetL
 }
 
 function buildFixedHtmlTable(origWb, fixedWb) {
+  const twoLine = workbookDataHasTwoHeaderRows(origWb) && origWb.headerColumns && origWb.headerColumns.length;
+  const dataRowStart1Based = twoLine ? 3 : 2;
+
   const table = document.createElement("table");
   table.className = "fixed-data-table";
   const thead = document.createElement("thead");
-  const trh = document.createElement("tr");
-  const corner = document.createElement("th");
-  corner.textContent = "Стр.";
-  trh.appendChild(corner);
-  for (const h of origWb.headers) {
-    const th = document.createElement("th");
-    th.textContent = h;
-    trh.appendChild(th);
+  if (twoLine) {
+    const cols = origWb.headerColumns;
+    const pair = buildExportHeaderRows(origWb);
+    const rowA = pair ? pair[0] : cols.map((ci) => String(origWb.headerRawRows[0][ci] ?? ""));
+    const rowB = pair ? pair[1] : cols.map((ci) => String(origWb.headerRawRows[1][ci] ?? ""));
+    const tr1 = document.createElement("tr");
+    const corner1 = document.createElement("th");
+    corner1.rowSpan = 2;
+    corner1.textContent = "Стр.";
+    tr1.appendChild(corner1);
+    for (let i = 0; i < cols.length; i += 1) {
+      const th = document.createElement("th");
+      th.textContent = rowA[i] == null ? "" : String(rowA[i]);
+      tr1.appendChild(th);
+    }
+    thead.appendChild(tr1);
+    const tr2 = document.createElement("tr");
+    for (let i = 0; i < cols.length; i += 1) {
+      const th = document.createElement("th");
+      th.textContent = rowB[i] == null ? "" : String(rowB[i]);
+      tr2.appendChild(th);
+    }
+    thead.appendChild(tr2);
+  } else {
+    const trh = document.createElement("tr");
+    const corner = document.createElement("th");
+    corner.textContent = "Стр.";
+    trh.appendChild(corner);
+    for (const h of origWb.headers) {
+      const th = document.createElement("th");
+      th.textContent = h;
+      trh.appendChild(th);
+    }
+    thead.appendChild(trh);
   }
-  thead.appendChild(trh);
   table.appendChild(thead);
 
   const tbody = document.createElement("tbody");
@@ -1263,7 +1510,7 @@ function buildFixedHtmlTable(origWb, fixedWb) {
     const tr = document.createElement("tr");
     const rowHead = document.createElement("th");
     rowHead.scope = "row";
-    rowHead.textContent = String(i + 2);
+    rowHead.textContent = String(i + dataRowStart1Based);
     tr.appendChild(rowHead);
     for (const h of origWb.headers) {
       const td = document.createElement("td");
@@ -1453,9 +1700,7 @@ function setProgress(percent, label) {
 function setUiBusy(isBusy) {
   Object.values(inputs).forEach((input) => { input.disabled = isBusy; });
   runCheckButton.disabled = isBusy;
-  tabUploadButton.disabled = isBusy;
-  tabCriteriaButton.disabled = isBusy;
-  tabFixedButton.disabled = isBusy;
+  // Вкладки не отключаем: иначе во время проверки переключение не работает (disabled не получает click).
 }
 
 async function yieldToUi() {
@@ -1463,10 +1708,28 @@ async function yieldToUi() {
 }
 
 function setActiveTab(tab) {
-  tabUploadButton.classList.toggle("is-active", tab === "upload");
-  tabCriteriaButton.classList.toggle("is-active", tab === "criteria");
-  tabFixedButton.classList.toggle("is-active", tab === "fixed");
-  uploadTabPanel.classList.toggle("is-active", tab === "upload");
-  criteriaTabPanel.classList.toggle("is-active", tab === "criteria");
-  fixedTabPanel.classList.toggle("is-active", tab === "fixed");
+  let active = tab;
+  if (active === "fixed" && !fixedTabPanel) active = "criteria";
+
+  if (tabUploadButton) {
+    tabUploadButton.classList.toggle("is-active", active === "upload");
+    tabUploadButton.setAttribute("aria-selected", active === "upload" ? "true" : "false");
+  }
+  if (tabCriteriaButton) {
+    tabCriteriaButton.classList.toggle("is-active", active === "criteria");
+    tabCriteriaButton.setAttribute("aria-selected", active === "criteria" ? "true" : "false");
+  }
+  if (tabFixedButton) {
+    tabFixedButton.classList.toggle("is-active", active === "fixed");
+    tabFixedButton.setAttribute("aria-selected", active === "fixed" ? "true" : "false");
+  }
+  if (uploadTabPanel) uploadTabPanel.classList.toggle("is-active", active === "upload");
+  if (criteriaTabPanel) criteriaTabPanel.classList.toggle("is-active", active === "criteria");
+  if (fixedTabPanel) fixedTabPanel.classList.toggle("is-active", active === "fixed");
+
+  const panelEl =
+    active === "upload" ? uploadTabPanel : active === "criteria" ? criteriaTabPanel : fixedTabPanel;
+  if (panelEl && typeof panelEl.scrollIntoView === "function") {
+    panelEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  }
 }
