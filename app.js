@@ -58,9 +58,7 @@ const DEFAULT_VI_RULES = {
   replaceSubjectColumn: "Заменяемый предмет",
   minScoreColumn: "Минимальный балл",
   maxScoreColumn: "Максимальный балл",
-  creativeTypeValue: "Дополнительное испытание творческой и (или) профессиональной направленности",
-  russianForeignSubject: "Русский язык для иностранных граждан",
-  russianForeignMinScore: 41
+  creativeTypeValue: "Дополнительное испытание творческой и (или) профессиональной направленности"
 };
 
 const inputs = {
@@ -217,7 +215,7 @@ async function onRunCheck() {
           { id: "min-ball-vi", title: "Минимальные баллы ВИ", issues: viCriteria.minIssues },
           { id: "rule-21-vi", title: "Правило 21 балла", issues: viCriteria.rule21Issues },
           { id: "rule-41-vi", title: "Правило 41 балла (СПО)", issues: viCriteria.rule41Issues },
-          { id: "ru-foreign-vi", title: "Русский язык для иностранных граждан", issues: viCriteria.ruForeignIssues },
+          { id: "spo-column-vi", title: "Предметы СПО только в «Заменяемый предмет»", issues: viCriteria.spoColumnIssues },
           { id: "special-mark-vi", title: "Формулировки особой отметки", issues: viCriteria.specialMarkIssues },
           { id: "vi-whitespace", title: "Пробелы в значениях ячеек", issues: ensureIssues(viWhitespaceCriterion) },
           { id: "vi-qualification", title: "Квалификация по уровню образования", issues: ensureIssues(viQualificationCriterion) }
@@ -534,7 +532,7 @@ async function runPnCriteriaChecks(pnWorkbookData, kgRules, benefitsRules, onPro
         issue(
           "kg-token-spacing",
           rowRef,
-          `В названии КГ "${kg}" есть пробелы рядом с разделителем "|". Укажите токены без пробелов (например, "|З|").`
+          `В названии КГ "${kg}" есть пробелы рядом с разделителем "|". Укажите названия без пробелов (например, "|З|").`
         )
       );
     }
@@ -626,7 +624,7 @@ async function checkViCriteria(viWorkbookData, minBallData, spoMinBallData, bene
   const minIssues = [];
   const rule21Issues = [];
   const rule41Issues = [];
-  const ruForeignIssues = [];
+  const spoColumnIssues = [];
   const specialMarkIssues = [];
   const benefitPatterns = (benefitsRules.replacements || []).map((item) => ({
     fromRaw: item.from,
@@ -640,7 +638,7 @@ async function checkViCriteria(viWorkbookData, minBallData, spoMinBallData, bene
       minIssues: [],
       rule21Issues: [],
       rule41Issues: [],
-      ruForeignIssues: [],
+      spoColumnIssues: [],
       specialMarkIssues: []
     };
   }
@@ -663,6 +661,19 @@ async function checkViCriteria(viWorkbookData, minBallData, spoMinBallData, bene
     const maxScore = Number(String(maxRaw).replace(",", "."));
     const isTarget = isYes(targetFlag, kgRules);
 
+    if (baseSubject && spoMinBallData.spoMap.has(normalizeSpoSubjectKey(baseSubject))) {
+      spoColumnIssues.push(
+        issue(
+          "spo-subject-in-base",
+          rowRef,
+          `Предмет СПО «${baseSubject}» не должен быть в столбце «Предмет». Укажите его только в столбце «Заменяемый предмет» (список СПО — spo_min_ball.txt).`
+        )
+      );
+    }
+    const spoSubjectInBaseColumn = Boolean(
+      baseSubject && spoMinBallData.spoMap.has(normalizeSpoSubjectKey(baseSubject))
+    );
+
     if (!Number.isNaN(maxScore)) {
       const expectedMax = getExpectedMax(formType, isTarget, viRules);
       if (expectedMax !== null && maxScore !== expectedMax) {
@@ -680,25 +691,24 @@ async function checkViCriteria(viWorkbookData, minBallData, spoMinBallData, bene
       } else if (formType === "ege" || formType === "exam") {
         if (!chosenSubject) {
           minIssues.push(issue("empty-subjects", rowRef, "Не заполнены поля \"Предмет\" и \"Заменяемый предмет\"."));
-        } else {
-          const ref = minBallData.map.get(normalizeText(chosenSubject));
-          const spoRef = spoMinBallData.spoMap.get(normalizeSpoSubjectKey(chosenSubject));
-          const matchedRef = ref || spoRef || null;
-          if (!matchedRef) {
+        } else if (!spoSubjectInBaseColumn) {
+          const resolved = resolveViMinScoreRef(chosenSubject, altSubject, minBallData, spoMinBallData);
+          if (resolved.kind === "missing") {
             minIssues.push(
               issue(
                 "missing-reference",
                 rowRef,
-                `Некорректный минимальный балл по предмету "${chosenSubject}": отсутствует значение в min_ball.txt и spo_min_ball.txt.`
+                `Некорректный минимальный балл по предмету «${chosenSubject}»: нет эталона в min_ball.txt и в spo_min_ball.txt.`
               )
             );
-          } else if (matchedRef.score !== minScore) {
-            const sourceName = ref ? "min_ball.txt" : "spo_min_ball.txt";
+          } else if (resolved.kind === "spo-requires-replace") {
+            minIssues.push(issue("spo-requires-replace-column", rowRef, resolved.message));
+          } else if (resolved.score !== minScore) {
             minIssues.push(
               issue(
                 "score-mismatch",
                 rowRef,
-                `Некорректный минимальный балл по предмету "${chosenSubject}": в файле ${minScore}, в ${sourceName} ${matchedRef.score}.`
+                `Некорректный минимальный балл по предмету «${chosenSubject}»: в файле ${minScore}, в ${resolved.sourceName} ${resolved.score}.`
               )
             );
           }
@@ -714,16 +724,18 @@ async function checkViCriteria(viWorkbookData, minBallData, spoMinBallData, bene
         }
       }
 
-      if (minScore === 41) {
+      if (minScore === 41 && !spoSubjectInBaseColumn) {
         const spoKey = normalizeSpoSubjectKey(chosenSubject);
         const spoRef = spoMinBallData.spoMap.get(spoKey);
         if (!spoRef) {
-          rule41Issues.push(issue("vi-rule-41-spo", rowRef, `Минимальный балл 41 допустим только для предметов СПО. Предмет "${chosenSubject}" не найден в СПО-разделе min_ball.txt.`));
+          rule41Issues.push(
+            issue(
+              "vi-rule-41-spo",
+              rowRef,
+              `Минимальный балл 41 допустим только для предметов СПО. Предмет «${chosenSubject}» не найден в spo_min_ball.txt.`
+            )
+          );
         }
-      }
-
-      if (normalizeText(baseSubject) === normalizeText(viRules.russianForeignSubject) && minScore !== Number(viRules.russianForeignMinScore)) {
-        ruForeignIssues.push(issue("vi-ru-foreign", rowRef, `Для "${viRules.russianForeignSubject}" минимальный балл должен быть ${viRules.russianForeignMinScore}.`));
       }
     }
 
@@ -743,7 +755,7 @@ async function checkViCriteria(viWorkbookData, minBallData, spoMinBallData, bene
     if ((index + 1) % 200 === 0) await yieldToUi();
   }
 
-  return { maxIssues, minIssues, rule21Issues, rule41Issues, ruForeignIssues, specialMarkIssues };
+  return { maxIssues, minIssues, rule21Issues, rule41Issues, spoColumnIssues, specialMarkIssues };
 }
 
 async function checkWhitespaceIssues(workbookData, fileLabel, onProgress) {
@@ -833,6 +845,34 @@ function normalizeSpoSubjectKey(subject) {
   const raw = String(subject || "").trim();
   const withoutPrefix = raw.replace(/^\s*спо\s*[:;,-]?\s*/i, "");
   return normalizeText(withoutPrefix);
+}
+
+/**
+ * Эталон минимума: обычные предметы — min_ball.txt; только СПО — spo_min_ball.txt и строка должна опираться на «Заменяемый предмет».
+ */
+function resolveViMinScoreRef(chosenSubject, altSubject, minBallData, spoMinBallData) {
+  const chosenNorm = normalizeText(chosenSubject);
+  const chosenSpoKey = normalizeSpoSubjectKey(chosenSubject);
+  const refMin = minBallData.map.get(chosenNorm);
+  const refSpo = spoMinBallData.spoMap.get(chosenSpoKey);
+
+  if (refMin && refSpo) {
+    return { kind: "ok", score: refMin.score, sourceName: "min_ball.txt" };
+  }
+  if (refMin && !refSpo) {
+    return { kind: "ok", score: refMin.score, sourceName: "min_ball.txt" };
+  }
+  if (!refMin && refSpo) {
+    const altTrim = altSubject ? String(altSubject).trim() : "";
+    if (!altTrim || normalizeSpoSubjectKey(altSubject) !== chosenSpoKey) {
+      return {
+        kind: "spo-requires-replace",
+        message: `Предмет СПО «${chosenSubject}» должен быть указан только в столбце «Заменяемый предмет» (эталон — spo_min_ball.txt).`
+      };
+    }
+    return { kind: "ok", score: refSpo.score, sourceName: "spo_min_ball.txt" };
+  }
+  return { kind: "missing" };
 }
 
 function normalizeBenefitText(value) {
@@ -1060,13 +1100,14 @@ function getIssueTypeLabel(type) {
     "invalid-score": "Некорректные значения баллов",
     "empty-subjects": "Пустые предметы",
     "score-mismatch": "Некорректный минимальный балл",
-    "missing-reference": "Некорректный минимальный балл (нет значения в min_ball.txt)",
+    "missing-reference": "Некорректный минимальный балл (нет эталона в min_ball.txt / spo_min_ball.txt)",
+    "spo-subject-in-base": "Предмет СПО в столбце «Предмет»",
+    "spo-requires-replace-column": "Предмет СПО не в столбце «Заменяемый предмет»",
     "vi-max": "Некорректный максимальный балл",
     "vi-min-id": "Минимальный балл для ИД",
     "vi-rule-21-type": "Правило 21 балла: тип испытания",
     "vi-rule-21-replace": "Правило 21 балла: заменяемый предмет",
     "vi-rule-41-spo": "Правило 41 балла (СПО)",
-    "vi-ru-foreign": "Русский язык для иностранных граждан",
     "whitespace-trim": "Пробелы в начале/конце",
     "whitespace-double": "Двойные пробелы",
     "qualification-missing-columns": "Отсутствуют столбцы квалификации",

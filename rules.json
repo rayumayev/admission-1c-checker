@@ -115,8 +115,6 @@
     "replaceSubjectColumn": "Заменяемый предмет",
     "minScoreColumn": "Минимальный балл",
     "maxScoreColumn": "Максимальный балл",
-    "creativeTypeValue": "Дополнительное испытание творческой и (или) профессиональной направленности",
-    "russianForeignSubject": "Русский язык для иностранных граждан",
-    "russianForeignMinScore": 41
+    "creativeTypeValue": "Дополнительное испытание творческой и (или) профессиональной направленности"
   }
 }
