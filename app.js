@@ -234,7 +234,8 @@ async function onRunCheck() {
     renderCriteriaReports(criteria);
     const pnCorrected = buildCorrectedPnData(pnWorkbookData, kgRules, benefitsRules);
     const viCorrected = buildCorrectedViData(viWorkbookData, minBallData, spoMinBallData, benefitsRules, kgRules, viRules);
-    renderFixedPreview(pnWorkbookData, pnCorrected, viWorkbookData, viCorrected);
+    setProgress(98, "Сборка таблиц исправлений...");
+    await renderFixedPreview(pnWorkbookData, pnCorrected, viWorkbookData, viCorrected);
     perf.end("render");
     perf.render();
     if (fixedTabPanel && tabFixedButton) setActiveTab("fixed");
@@ -954,7 +955,7 @@ async function checkQualificationByLevel(workbookData, fileLabel, onProgress) {
     }
 
     if (onProgress) onProgress(rowIndex + 1, workbookData.rows.length, `Проверка квалификации ${fileLabel}... ${rowIndex + 1}/${workbookData.rows.length}`);
-    if ((rowIndex + 1) % 250 === 0) await yieldToUi();
+    if ((rowIndex + 1) % 100 === 0) await yieldToUi();
   }
 
   return { issues };
@@ -1058,11 +1059,11 @@ async function checkPnViMatch(pnWorkbookData, viWorkbookData, rules, onProgress)
     const rowRef = `Строка ${index + 2}`;
     const kgValue = getVal(pnRow, pnKgHeader);
     const key = normalizeText(kgValue);
-    if (!key) return;
+    if (!key) continue;
     const viRow = viByKg.get(key);
     if (!viRow) {
       issues.push(issue("missing-kg-in-vi", rowRef, `КГ "${kgValue}" есть в ПН, но отсутствует в ВИ.`));
-      return;
+      continue;
     }
     for (const pair of resolvedPairs) {
       const pnValue = getVal(pnRow, pair.pnHeader);
@@ -1419,19 +1420,19 @@ function downloadWorkbookDataXlsx(workbookData, filename, sheetName) {
   XLSX.writeFile(wb, filename);
 }
 
-function renderFixedPreview(pnOrig, pnFixed, viOrig, viFixed) {
+async function renderFixedPreview(pnOrig, pnFixed, viOrig, viFixed) {
   if (!fixedTablesMount) return;
   fixedTablesMount.innerHTML = "";
 
   fixedTablesMount.appendChild(
-    buildFixedTableSection("План набора (исправлено)", pnOrig, pnFixed, "pn_corrected.xlsx", "ПН")
+    await buildFixedTableSection("План набора (исправлено)", pnOrig, pnFixed, "pn_corrected.xlsx", "ПН")
   );
   fixedTablesMount.appendChild(
-    buildFixedTableSection("Вступительные испытания (исправлено)", viOrig, viFixed, "vi_corrected.xlsx", "ВИ")
+    await buildFixedTableSection("Вступительные испытания (исправлено)", viOrig, viFixed, "vi_corrected.xlsx", "ВИ")
   );
 }
 
-function buildFixedTableSection(title, origWb, fixedWb, downloadFilename, sheetLabel) {
+async function buildFixedTableSection(title, origWb, fixedWb, downloadFilename, sheetLabel) {
   const section = document.createElement("section");
   section.className = "fixed-table-section";
 
@@ -1450,7 +1451,7 @@ function buildFixedTableSection(title, origWb, fixedWb, downloadFilename, sheetL
 
   const scroll = document.createElement("div");
   scroll.className = "fixed-table-scroll";
-  scroll.appendChild(buildFixedHtmlTable(origWb, fixedWb));
+  scroll.appendChild(await buildFixedHtmlTable(origWb, fixedWb));
 
   section.appendChild(h3);
   section.appendChild(toolbar);
@@ -1458,7 +1459,9 @@ function buildFixedTableSection(title, origWb, fixedWb, downloadFilename, sheetL
   return section;
 }
 
-function buildFixedHtmlTable(origWb, fixedWb) {
+const FIXED_TABLE_BODY_CHUNK_ROWS = 120;
+
+async function buildFixedHtmlTable(origWb, fixedWb) {
   const twoLine = workbookDataHasTwoHeaderRows(origWb) && origWb.headerColumns && origWb.headerColumns.length;
   const dataRowStart1Based = twoLine ? 3 : 2;
 
@@ -1504,26 +1507,30 @@ function buildFixedHtmlTable(origWb, fixedWb) {
 
   const tbody = document.createElement("tbody");
   const n = Math.max(origWb.rows.length, fixedWb.rows.length);
-  for (let i = 0; i < n; i += 1) {
-    const origRow = origWb.rows[i] || {};
-    const fixedRow = fixedWb.rows[i] || {};
-    const tr = document.createElement("tr");
-    const rowHead = document.createElement("th");
-    rowHead.scope = "row";
-    rowHead.textContent = String(i + dataRowStart1Based);
-    tr.appendChild(rowHead);
-    for (const h of origWb.headers) {
-      const td = document.createElement("td");
-      const o = origRow[h] == null ? "" : String(origRow[h]);
-      const f = fixedRow[h] == null ? "" : String(fixedRow[h]);
-      td.textContent = f;
-      if (o !== f) {
-        td.classList.add("cell-corrected");
-        td.title = `Было: ${o}`;
+  for (let start = 0; start < n; start += FIXED_TABLE_BODY_CHUNK_ROWS) {
+    const end = Math.min(start + FIXED_TABLE_BODY_CHUNK_ROWS, n);
+    for (let i = start; i < end; i += 1) {
+      const origRow = origWb.rows[i] || {};
+      const fixedRow = fixedWb.rows[i] || {};
+      const tr = document.createElement("tr");
+      const rowHead = document.createElement("th");
+      rowHead.scope = "row";
+      rowHead.textContent = String(i + dataRowStart1Based);
+      tr.appendChild(rowHead);
+      for (const h of origWb.headers) {
+        const td = document.createElement("td");
+        const o = origRow[h] == null ? "" : String(origRow[h]);
+        const f = fixedRow[h] == null ? "" : String(fixedRow[h]);
+        td.textContent = f;
+        if (o !== f) {
+          td.classList.add("cell-corrected");
+          td.title = `Было: ${o}`;
+        }
+        tr.appendChild(td);
       }
-      tr.appendChild(td);
+      tbody.appendChild(tr);
     }
-    tbody.appendChild(tr);
+    if (end < n) await yieldToUi();
   }
   table.appendChild(tbody);
   return table;
