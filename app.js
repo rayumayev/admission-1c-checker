@@ -59,7 +59,14 @@ const DEFAULT_VI_RULES = {
   replaceSubjectColumn: "Заменяемый предмет",
   minScoreColumn: "Минимальный балл",
   maxScoreColumn: "Максимальный балл",
-  creativeTypeValue: "Дополнительное испытание творческой и (или) профессиональной направленности"
+  creativeTypeValue: "Дополнительное испытание творческой и (или) профессиональной направленности",
+  subjectSequenceGroupColumns: [
+    "Конкурсная группа",
+    "Базовый вид образования",
+    "Льгота",
+    "Особая отметка"
+  ],
+  individualAchievementSubjectIncludes: "индивидуальное достижение"
 };
 
 /** Защита от зависаний на «случайных» мегабайтных ячейках Excel (нормализация и .includes по ним линейно дороги). */
@@ -215,6 +222,15 @@ async function onRunCheck() {
       viTemplateHeaders.headers
     );
     perf.end("vi_criteria");
+    perf.start("vi_subject_sequence", "Порядок предметов ВИ");
+    const viSubjectSequenceCriterion = await checkViSubjectSequence(
+      viWorkbookData,
+      viRules,
+      kgRules,
+      viTemplateHeaders.headers,
+      progress.step
+    );
+    perf.end("vi_subject_sequence");
     progress.setPhase(92, 95, "Проверка пробелов ВИ...");
     perf.start("vi_spaces", "Проверка пробелов ВИ");
     const viWhitespaceCriterion = await checkWhitespaceIssues(viWorkbookData, "ВИ", progress.step);
@@ -264,6 +280,11 @@ async function onRunCheck() {
           { id: "rule-41-vi", title: "Правило 41 балла: для предметов СПО", issues: viCriteria.rule41Issues },
           { id: "spo-column-vi", title: "Предметы СПО только в «Заменяемый предмет»", issues: viCriteria.spoColumnIssues },
           { id: "special-mark-vi", title: "Формулировки особой отметки", issues: viCriteria.specialMarkIssues },
+          {
+            id: "vi-subject-sequence",
+            title: "Порядок предметов (КГ, базовый вид образования, льгота, особая отметка)",
+            issues: ensureIssues(viSubjectSequenceCriterion)
+          },
           { id: "vi-whitespace", title: "Пробелы в значениях ячеек", issues: ensureIssues(viWhitespaceCriterion) },
           { id: "vi-qualification", title: "Квалификация по уровню образования", issues: ensureIssues(viQualificationCriterion) }
         ]
@@ -1069,6 +1090,193 @@ async function checkViCriteria(viWorkbookData, minBallData, spoMinBallData, bene
   return { maxIssues, minIssues, rule21Issues, rule41Issues, spoColumnIssues, specialMarkIssues };
 }
 
+/**
+ * Порядок предметов внутри группы строк с одинаковыми КГ, базовым видом образования, льготой и особой отметкой.
+ */
+async function checkViSubjectSequence(viWorkbookData, viRules, _kgRules, templateHeaders, onProgress) {
+  const issues = [];
+  const groupColumnNames = Array.isArray(viRules.subjectSequenceGroupColumns)
+    ? viRules.subjectSequenceGroupColumns
+    : DEFAULT_VI_RULES.subjectSequenceGroupColumns;
+  const subjectHeader = findHeader(viWorkbookData.headers, viRules.subjectColumn, templateHeaders);
+  const replaceHeader = findHeader(viWorkbookData.headers, viRules.replaceSubjectColumn, templateHeaders);
+  const testFormHeader = findHeader(viWorkbookData.headers, viRules.testFormColumn, templateHeaders);
+
+  const missingForCriterion = [];
+  const groupHeaders = [];
+  for (const name of groupColumnNames) {
+    const h = findHeader(viWorkbookData.headers, name, templateHeaders);
+    if (!h) missingForCriterion.push(`«${name}»`);
+    else groupHeaders.push(h);
+  }
+  if (!subjectHeader) missingForCriterion.push(`«${viRules.subjectColumn}»`);
+  if (!replaceHeader) missingForCriterion.push(`«${viRules.replaceSubjectColumn}»`);
+  if (!testFormHeader) missingForCriterion.push(`«${viRules.testFormColumn}»`);
+
+  if (missingForCriterion.length > 0) {
+    issues.push(
+      issue(
+        "vi-seq-missing-group-columns",
+        "ВИ",
+        `Для критерия порядка предметов не найдены столбцы: ${missingForCriterion.join(", ")}.`
+      )
+    );
+    return { issues };
+  }
+
+  const idMark = normalizeText(
+    viRules.individualAchievementSubjectIncludes ||
+      DEFAULT_VI_RULES.individualAchievementSubjectIncludes ||
+      "индивидуальное достижение"
+  );
+
+  function rowIsId(row) {
+    const form = getVal(row, testFormHeader);
+    if (detectViFormType(form, viRules) === "id") return true;
+    const subj = getVal(row, subjectHeader);
+    if (idMark && normalizeText(subj).includes(idMark)) return true;
+    return false;
+  }
+
+  function groupKey(row) {
+    return groupHeaders.map((h) => normalizeText(getVal(row, h))).join("\x1e");
+  }
+
+  function subjectOf(row) {
+    return String(getVal(row, subjectHeader)).trim();
+  }
+
+  function replaceOf(row) {
+    return String(getVal(row, replaceHeader)).trim();
+  }
+
+  const groups = new Map();
+  const keyOrder = [];
+  const rows = viWorkbookData.rows;
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i];
+    const key = groupKey(row);
+    if (!groups.has(key)) {
+      groups.set(key, []);
+      keyOrder.push(key);
+    }
+    groups.get(key).push({ rowIndex: i, row });
+    if (onProgress) onProgress(i + 1, rows.length, `Проверка порядка предметов ВИ... ${i + 1}/${rows.length}`);
+    updateRowProgress("vi", i + 1, rows.length);
+    if ((i + 1) % CHECK_LOOP_YIELD_EVERY === 0) await yieldToUi();
+  }
+
+  let groupIter = 0;
+  for (const key of keyOrder) {
+    const items = groups.get(key);
+    const n = items.length;
+    const isIdArr = items.map(({ row }) => rowIsId(row));
+
+    const firstId = isIdArr.findIndex(Boolean);
+    if (firstId !== -1) {
+      for (let i = firstId + 1; i < n; i += 1) {
+        if (!isIdArr[i]) {
+          const { rowIndex } = items[i];
+          issues.push(
+            issue(
+              "vi-seq-id-not-last",
+              `Строка ${rowIndex + 2}`,
+              "После индивидуального достижения не должно идти иных вступительных испытаний: ИД только в конце группы с той же КГ, базовым видом образования, льготой и особой отметкой."
+            )
+          );
+        }
+      }
+    }
+
+    const nonIdEntries = items
+      .map((item, pos) => ({ ...item, pos }))
+      .filter((_, pos) => !isIdArr[pos]);
+
+    const bySubject = new Map();
+    for (const e of nonIdEntries) {
+      const S = subjectOf(e.row);
+      const R = replaceOf(e.row);
+      if (!S && !R) continue;
+      if (!S) continue;
+      if (!bySubject.has(S)) bySubject.set(S, []);
+      bySubject.get(S).push({
+        pos: e.pos,
+        rowIndex: e.rowIndex,
+        replaceFilled: Boolean(R)
+      });
+    }
+
+    for (const [S, entries] of bySubject) {
+      const bases = entries.filter((e) => !e.replaceFilled);
+      const fills = entries.filter((e) => e.replaceFilled);
+
+      if (fills.length > 0 && bases.length === 0) {
+        for (const f of fills) {
+          issues.push(
+            issue(
+              "vi-seq-replace-without-base",
+              `Строка ${f.rowIndex + 2}`,
+              `Для предмета «${S}» сначала должна идти строка без заменяемого предмета, затем — с заменой.`
+            )
+          );
+        }
+        continue;
+      }
+
+      if (bases.length > 1) {
+        for (let k = 1; k < bases.length; k += 1) {
+          const b = bases[k];
+          issues.push(
+            issue(
+              "vi-seq-duplicate-base",
+              `Строка ${b.rowIndex + 2}`,
+              `Для предмета «${S}» допускается только одна строка с пустым «Заменяемый предмет» перед вариантами замены.`
+            )
+          );
+        }
+      }
+
+      if (bases.length && fills.length) {
+        const maxBasePos = Math.max(...bases.map((b) => b.pos));
+        const minFillPos = Math.min(...fills.map((f) => f.pos));
+        if (maxBasePos >= minFillPos) {
+          const offender = fills.find((f) => f.pos <= maxBasePos) || fills[0];
+          issues.push(
+            issue(
+              "vi-seq-subject-order",
+              `Строка ${offender.rowIndex + 2}`,
+              `Для предмета «${S}» все строки без заменяемого предмета должны идти раньше строк с заполненным «Заменяемый предмет».`
+            )
+          );
+        }
+      }
+
+      const poses = entries.map((e) => e.pos);
+      const minP = Math.min(...poses);
+      const maxP = Math.max(...poses);
+      for (let j = minP; j <= maxP; j += 1) {
+        if (isIdArr[j]) continue;
+        const subj = subjectOf(items[j].row);
+        if (subj !== S) {
+          const { rowIndex } = items[j];
+          issues.push(
+            issue(
+              "vi-seq-subject-order",
+              `Строка ${rowIndex + 2}`,
+              `Между строками с предметом «${S}» не должно быть других предметов (нарушена непрерывность блока).`
+            )
+          );
+        }
+      }
+    }
+
+    groupIter += 1;
+    if (groupIter % CHECK_LOOP_YIELD_EVERY === 0) await yieldToUi();
+  }
+
+  return { issues };
+}
+
 async function checkWhitespaceIssues(workbookData, fileLabel, onProgress) {
   const issues = [];
   for (let rowIndex = 0; rowIndex < workbookData.rows.length; rowIndex += 1) {
@@ -1465,7 +1673,7 @@ function buildCorrectedPnData(pnWorkbookData, kgRules, benefitsRules, templateHe
     level: findHeader(headers, "Уровень подготовки", templateHeaders),
     code: findHeader(headers, "Код", templateHeaders),
     direction: findHeader(headers, "Направление", templateHeaders),
-    benefit: findHeader(headers, "Название льготы", templateHeaders),
+    benefit: findHeader(headers, "Льгота", templateHeaders),
     specialMark: findHeader(headers, "Особая отметка", templateHeaders),
     targetDetailed: findHeader(headers, "Целевая детализированная квота", templateHeaders),
     rfOnly: findHeader(headers, "Только для граждан РФ", templateHeaders),
@@ -1883,7 +2091,12 @@ function getIssueTypeLabel(type) {
     "qualification-mismatch": "Несоответствие квалификации уровню образования",
     "missing-kg-in-vi": "КГ отсутствует в файле ВИ",
     "pn-vi-mismatch": "Несовпадения ПН и ВИ",
-    "benefit-replace": "Некорректные названия льгот"
+    "benefit-replace": "Некорректные названия льгот",
+    "vi-seq-missing-group-columns": "Порядок предметов ВИ: нет столбцов группировки",
+    "vi-seq-id-not-last": "Порядок предметов ВИ: ИД не в конце группы",
+    "vi-seq-replace-without-base": "Порядок предметов ВИ: замена без базовой строки",
+    "vi-seq-duplicate-base": "Порядок предметов ВИ: дублирование строки без замены",
+    "vi-seq-subject-order": "Порядок предметов ВИ: нарушен порядок или блок предмета"
   };
   return map[type] || "Прочие ошибки";
 }
