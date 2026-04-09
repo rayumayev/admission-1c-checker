@@ -171,7 +171,13 @@ async function onRunCheck() {
     const progress = createProgressReporter();
     progress.setPhase(68, 78, "Проверка критериев ПН...");
     perf.start("pn_criteria", "Проверка критериев ПН");
-    const pnCriteria = await runPnCriteriaChecks(pnWorkbookData, kgRules, benefitsRules, progress.step);
+    const pnCriteria = await runPnCriteriaChecks(
+      pnWorkbookData,
+      kgRules,
+      benefitsRules,
+      progress.step,
+      pnTemplateHeaders.headers
+    );
     perf.end("pn_criteria");
     progress.setPhase(78, 82, "Проверка пробелов ПН...");
     perf.start("pn_spaces", "Проверка пробелов ПН");
@@ -179,12 +185,26 @@ async function onRunCheck() {
     perf.end("pn_spaces");
     progress.setPhase(82, 85, "Проверка квалификации ПН...");
     perf.start("pn_qualification", "Проверка квалификации ПН");
-    const pnQualificationCriterion = await checkQualificationByLevel(pnWorkbookData, "ПН", progress.step);
+    const pnQualificationCriterion = await checkQualificationByLevel(
+      pnWorkbookData,
+      "ПН",
+      progress.step,
+      pnTemplateHeaders.headers
+    );
     perf.end("pn_qualification");
 
     progress.setPhase(85, 92, "Проверка критериев ВИ...");
     perf.start("vi_criteria", "Проверка критериев ВИ");
-    const viCriteria = await checkViCriteria(viWorkbookData, minBallData, spoMinBallData, benefitsRules, kgRules, viRules, progress.step);
+    const viCriteria = await checkViCriteria(
+      viWorkbookData,
+      minBallData,
+      spoMinBallData,
+      benefitsRules,
+      kgRules,
+      viRules,
+      progress.step,
+      viTemplateHeaders.headers
+    );
     perf.end("vi_criteria");
     progress.setPhase(92, 95, "Проверка пробелов ВИ...");
     perf.start("vi_spaces", "Проверка пробелов ВИ");
@@ -192,7 +212,12 @@ async function onRunCheck() {
     perf.end("vi_spaces");
     progress.setPhase(95, 97, "Проверка квалификации ВИ...");
     perf.start("vi_qualification", "Проверка квалификации ВИ");
-    const viQualificationCriterion = await checkQualificationByLevel(viWorkbookData, "ВИ", progress.step);
+    const viQualificationCriterion = await checkQualificationByLevel(
+      viWorkbookData,
+      "ВИ",
+      progress.step,
+      viTemplateHeaders.headers
+    );
     perf.end("vi_qualification");
 
     progress.setPhase(97, 99, "Сверка ПН и ВИ...");
@@ -239,8 +264,16 @@ async function onRunCheck() {
     perf.start("render", "Рендер отчета");
     renderCriteriaReports(criteria);
     setProgress(97, "Подготовка данных исправлений...");
-    const pnCorrected = buildCorrectedPnData(pnWorkbookData, kgRules, benefitsRules);
-    const viCorrected = buildCorrectedViData(viWorkbookData, minBallData, spoMinBallData, benefitsRules, kgRules, viRules);
+    const pnCorrected = buildCorrectedPnData(pnWorkbookData, kgRules, benefitsRules, pnTemplateHeaders.headers);
+    const viCorrected = buildCorrectedViData(
+      viWorkbookData,
+      minBallData,
+      spoMinBallData,
+      benefitsRules,
+      kgRules,
+      viRules,
+      viTemplateHeaders.headers
+    );
     renderFixedPreview(pnWorkbookData, pnCorrected, viWorkbookData, viCorrected);
     perf.end("render");
     perf.render();
@@ -528,20 +561,6 @@ function forwardFillTopRow(row0) {
   });
 }
 
-/** Одинаковые подписи столбцов ломают rowObj[header] и дают «цикл» из одного заголовка в превью. */
-function uniquifyHeaderLabel(base, used) {
-  const trimmed = String(base || "").trim();
-  if (!trimmed) return "";
-  let name = trimmed;
-  let n = 2;
-  while (used.has(name)) {
-    name = `${trimmed} (${n})`;
-    n += 1;
-  }
-  used.add(name);
-  return name;
-}
-
 /** Составной заголовок «родитель / дочерний»; иначе одна строка (в т.ч. «… (2)» после uniquify). */
 function splitCompositeHeaderLabel(full) {
   const s = String(full || "").trim();
@@ -570,23 +589,6 @@ function buildHeaderRowsFromUniquifiedLabels(headers) {
   return [row1, row2];
 }
 
-function resolveCompositeHeaderParts(tRaw, bRaw) {
-  const t = String(tRaw || "").trim();
-  const b = String(bRaw || "").trim();
-  let name = "";
-  if (t && b) {
-    name = normalizeText(t) === normalizeText(b) ? t : `${t} / ${b}`;
-  } else if (t && !b) {
-    name = t;
-  } else if (!t && b) {
-    name = b;
-  } else {
-    return { trimmed: "", topOnly: false };
-  }
-  const trimmed = String(name).trim();
-  return { trimmed, topOnly: Boolean(t && !b) };
-}
-
 function buildCompositeHeadersFromRows(row0, row1) {
   const maxCol = Math.max(row0.length, row1.length, 0);
   const p0 = padRowToLength(row0, maxCol);
@@ -594,24 +596,23 @@ function buildCompositeHeadersFromRows(row0, row1) {
   const topFilled = forwardFillTopRow(p0);
   const headers = [];
   const headerColumns = [];
-  const usedNames = new Set();
 
   for (let i = 0; i < maxCol; i += 1) {
     const t = String(topFilled[i] || "").trim();
     const b = p1[i] == null ? "" : String(p1[i]).trim();
-    const { trimmed, topOnly } = resolveCompositeHeaderParts(t, b);
-    if (!trimmed) continue;
-
-    if (i > 0) {
-      const pt = String(topFilled[i - 1] || "").trim();
-      const pb = p1[i - 1] == null ? "" : String(p1[i - 1]).trim();
-      const prev = resolveCompositeHeaderParts(pt, pb);
-      if (prev.trimmed && topOnly && prev.topOnly && prev.trimmed === trimmed) {
-        continue;
-      }
+    let name = "";
+    if (t && b) {
+      name = normalizeText(t) === normalizeText(b) ? t : `${t} / ${b}`;
+    } else if (t && !b) {
+      name = t;
+    } else if (!t && b) {
+      name = b;
+    } else {
+      continue;
     }
-
-    headers.push(uniquifyHeaderLabel(trimmed, usedNames));
+    const trimmed = String(name).trim();
+    if (!trimmed) continue;
+    headers.push(trimmed);
     headerColumns.push(i);
   }
 
@@ -621,15 +622,10 @@ function buildCompositeHeadersFromRows(row0, row1) {
 function buildLegacySingleRowHeaders(row0) {
   const headers = [];
   const headerColumns = [];
-  const usedNames = new Set();
   for (let i = 0; i < row0.length; i += 1) {
     const value = row0[i] == null ? "" : String(row0[i]).trim();
     if (!value) continue;
-    if (i > 0) {
-      const prevVal = row0[i - 1] == null ? "" : String(row0[i - 1]).trim();
-      if (prevVal && prevVal === value) continue;
-    }
-    headers.push(uniquifyHeaderLabel(value, usedNames));
+    headers.push(value);
     headerColumns.push(i);
   }
   const maxCol = Math.max(row0.length, 1);
@@ -730,22 +726,22 @@ async function readSpoMinBallFromFile(file) {
   return { spoMap, warnings };
 }
 
-async function runPnCriteriaChecks(pnWorkbookData, kgRules, benefitsRules, onProgress) {
+async function runPnCriteriaChecks(pnWorkbookData, kgRules, benefitsRules, onProgress, templateHeaders = []) {
   const headers = pnWorkbookData.headers;
   const rows = pnWorkbookData.rows;
   const h = {
-    kg: findHeader(headers, "Конкурсная группа"),
-    level: findHeader(headers, "Уровень образования"),
-    form: findHeader(headers, "Форма обучения"),
-    finance: findHeader(headers, "Источник финансирования"),
-    code: findHeader(headers, "Код"),
-    foreignOnly: findHeader(headers, "Только для иностранных граждан"),
-    rfOnly: findHeader(headers, "Только для граждан РФ"),
-    targetDetailed: findHeader(headers, "Целевая детализированная квота"),
-    benefit: findHeader(headers, "Название льготы"),
-    specialMark: findHeader(headers, "Особая отметка"),
-    specialFeature: findHeader(headers, kgRules.separateQuotaRule.specialFeatureColumn),
-    specialRight: findHeader(headers, kgRules.separateQuotaRule.specialRightColumn)
+    kg: findHeader(headers, "Конкурсная группа", templateHeaders),
+    level: findHeader(headers, "Уровень образования", templateHeaders),
+    form: findHeader(headers, "Форма обучения", templateHeaders),
+    finance: findHeader(headers, "Источник финансирования", templateHeaders),
+    code: findHeader(headers, "Код", templateHeaders),
+    foreignOnly: findHeader(headers, "Только для иностранных граждан", templateHeaders),
+    rfOnly: findHeader(headers, "Только для граждан РФ", templateHeaders),
+    targetDetailed: findHeader(headers, "Целевая детализированная квота", templateHeaders),
+    benefit: findHeader(headers, "Название льготы", templateHeaders),
+    specialMark: findHeader(headers, "Особая отметка", templateHeaders),
+    specialFeature: findHeader(headers, kgRules.separateQuotaRule.specialFeatureColumn, templateHeaders),
+    specialRight: findHeader(headers, kgRules.separateQuotaRule.specialRightColumn, templateHeaders)
   };
 
   const kgNameIssues = [];
@@ -862,15 +858,15 @@ async function runPnCriteriaChecks(pnWorkbookData, kgRules, benefitsRules, onPro
   return { kgNameIssues, codeIssues, levelIssues, foreignIssues, rfIssues, benefitIssues, targetDetailedIssues };
 }
 
-async function checkViCriteria(viWorkbookData, minBallData, spoMinBallData, benefitsRules, kgRules, viRules, onProgress) {
-  const subjectHeader = findHeader(viWorkbookData.headers, viRules.subjectColumn);
-  const replaceSubjectHeader = findHeader(viWorkbookData.headers, viRules.replaceSubjectColumn);
-  const minScoreHeader = findHeader(viWorkbookData.headers, viRules.minScoreColumn);
-  const maxScoreHeader = findHeader(viWorkbookData.headers, viRules.maxScoreColumn);
-  const testFormHeader = findHeader(viWorkbookData.headers, viRules.testFormColumn);
-  const testTypeHeader = findHeader(viWorkbookData.headers, viRules.testTypeColumn);
-  const targetHeader = findHeader(viWorkbookData.headers, viRules.targetColumn);
-  const specialMarkHeader = findHeader(viWorkbookData.headers, viRules.specialMarkColumn);
+async function checkViCriteria(viWorkbookData, minBallData, spoMinBallData, benefitsRules, kgRules, viRules, onProgress, templateHeaders = []) {
+  const subjectHeader = findHeader(viWorkbookData.headers, viRules.subjectColumn, templateHeaders);
+  const replaceSubjectHeader = findHeader(viWorkbookData.headers, viRules.replaceSubjectColumn, templateHeaders);
+  const minScoreHeader = findHeader(viWorkbookData.headers, viRules.minScoreColumn, templateHeaders);
+  const maxScoreHeader = findHeader(viWorkbookData.headers, viRules.maxScoreColumn, templateHeaders);
+  const testFormHeader = findHeader(viWorkbookData.headers, viRules.testFormColumn, templateHeaders);
+  const testTypeHeader = findHeader(viWorkbookData.headers, viRules.testTypeColumn, templateHeaders);
+  const targetHeader = findHeader(viWorkbookData.headers, viRules.targetColumn, templateHeaders);
+  const specialMarkHeader = findHeader(viWorkbookData.headers, viRules.specialMarkColumn, templateHeaders);
 
   const maxIssues = [];
   const minIssues = [];
@@ -1039,12 +1035,22 @@ async function checkWhitespaceIssues(workbookData, fileLabel, onProgress) {
   return { issues };
 }
 
-async function checkQualificationByLevel(workbookData, fileLabel, onProgress) {
+async function checkQualificationByLevel(workbookData, fileLabel, onProgress, templateHeaders = []) {
   const issues = [];
-  const levelHeader = findHeader(workbookData.headers, "Уровень образования");
-  const qualificationHeader = findHeader(workbookData.headers, "Квалификация");
+  const levelHeader =
+    findHeader(workbookData.headers, "Уровень образования", templateHeaders) ||
+    findHeader(workbookData.headers, "Уровень подготовки", templateHeaders);
+  const qualificationHeader = findHeader(workbookData.headers, "Квалификация", templateHeaders);
   if (!levelHeader || !qualificationHeader) {
-    return { issues: [issue("qualification-missing-columns", fileLabel, `[${fileLabel}] Не найдены столбцы "Уровень образования" и/или "Квалификация".`)] };
+    return {
+      issues: [
+        issue(
+          "qualification-missing-columns",
+          fileLabel,
+          `[${fileLabel}] Не найдены столбцы "Уровень образования" (или "Уровень подготовки") и/или "Квалификация".`
+        )
+      ]
+    };
   }
 
   for (let rowIndex = 0; rowIndex < workbookData.rows.length; rowIndex += 1) {
@@ -1221,11 +1227,10 @@ function ensureIssues(result) {
 }
 
 function normalizeHeaderLookupName(value) {
-  // Снимаем технические суффиксы, добавленные для уникализации: "Поле (2)" -> "Поле".
-  return normalizeText(String(value || "").replace(/\s*\(\d+\)\s*$/u, ""));
+  return normalizeText(value);
 }
 
-function findHeader(headers, expectedName) {
+function findHeader(headers, expectedName, templateHeaders = []) {
   const target = normalizeHeaderLookupName(expectedName);
   if (!target) return null;
 
@@ -1244,6 +1249,18 @@ function findHeader(headers, expectedName) {
 
   const byIncludes = headers.filter((h) => normalizeHeaderLookupName(h).includes(target));
   if (byIncludes.length > 0) return byIncludes[0];
+
+  if (Array.isArray(templateHeaders) && templateHeaders.length > 0) {
+    const templateCandidate = templateHeaders.find((th) =>
+      headerNamesCorrespondForComparison(expectedName, th)
+    );
+    if (templateCandidate) {
+      const resolved = headers.find((h) =>
+        headerNamesCorrespondForComparison(templateCandidate, h)
+      );
+      if (resolved) return resolved;
+    }
+  }
 
   return null;
 }
@@ -1360,21 +1377,23 @@ function expectedQualificationForLevel(level) {
   return "-";
 }
 
-function buildCorrectedPnData(pnWorkbookData, kgRules, benefitsRules) {
+function buildCorrectedPnData(pnWorkbookData, kgRules, benefitsRules, templateHeaders = []) {
   const headers = pnWorkbookData.headers;
   const patterns = buildBenefitPatternsFromRules(benefitsRules);
   const h = {
-    kg: findHeader(headers, "Конкурсная группа"),
-    level: findHeader(headers, "Уровень образования"),
-    benefit: findHeader(headers, "Название льготы"),
-    specialMark: findHeader(headers, "Особая отметка"),
-    targetDetailed: findHeader(headers, "Целевая детализированная квота"),
-    rfOnly: findHeader(headers, "Только для граждан РФ"),
-    foreignOnly: findHeader(headers, "Только для иностранных граждан"),
-    specialFeature: findHeader(headers, kgRules.separateQuotaRule.specialFeatureColumn),
-    specialRight: findHeader(headers, kgRules.separateQuotaRule.specialRightColumn)
+    kg: findHeader(headers, "Конкурсная группа", templateHeaders),
+    level:
+      findHeader(headers, "Уровень образования", templateHeaders) ||
+      findHeader(headers, "Уровень подготовки", templateHeaders),
+    benefit: findHeader(headers, "Название льготы", templateHeaders),
+    specialMark: findHeader(headers, "Особая отметка", templateHeaders),
+    targetDetailed: findHeader(headers, "Целевая детализированная квота", templateHeaders),
+    rfOnly: findHeader(headers, "Только для граждан РФ", templateHeaders),
+    foreignOnly: findHeader(headers, "Только для иностранных граждан", templateHeaders),
+    specialFeature: findHeader(headers, kgRules.separateQuotaRule.specialFeatureColumn, templateHeaders),
+    specialRight: findHeader(headers, kgRules.separateQuotaRule.specialRightColumn, templateHeaders)
   };
-  const qualH = findHeader(headers, "Квалификация");
+  const qualH = findHeader(headers, "Квалификация", templateHeaders);
 
   const rows = pnWorkbookData.rows.map((row) => {
     const next = {};
@@ -1427,18 +1446,20 @@ function buildCorrectedPnData(pnWorkbookData, kgRules, benefitsRules) {
   };
 }
 
-function buildCorrectedViData(viWorkbookData, minBallData, spoMinBallData, benefitsRules, kgRules, viRules) {
+function buildCorrectedViData(viWorkbookData, minBallData, spoMinBallData, benefitsRules, kgRules, viRules, templateHeaders = []) {
   const headers = viWorkbookData.headers;
   const patterns = buildBenefitPatternsFromRules(benefitsRules);
-  const subjectHeader = findHeader(headers, viRules.subjectColumn);
-  const replaceHeader = findHeader(headers, viRules.replaceSubjectColumn);
-  const minScoreHeader = findHeader(headers, viRules.minScoreColumn);
-  const maxScoreHeader = findHeader(headers, viRules.maxScoreColumn);
-  const testFormHeader = findHeader(headers, viRules.testFormColumn);
-  const targetHeader = findHeader(headers, viRules.targetColumn);
-  const specialMarkHeader = findHeader(headers, viRules.specialMarkColumn);
-  const levelHeader = findHeader(headers, "Уровень образования");
-  const qualHeader = findHeader(headers, "Квалификация");
+  const subjectHeader = findHeader(headers, viRules.subjectColumn, templateHeaders);
+  const replaceHeader = findHeader(headers, viRules.replaceSubjectColumn, templateHeaders);
+  const minScoreHeader = findHeader(headers, viRules.minScoreColumn, templateHeaders);
+  const maxScoreHeader = findHeader(headers, viRules.maxScoreColumn, templateHeaders);
+  const testFormHeader = findHeader(headers, viRules.testFormColumn, templateHeaders);
+  const targetHeader = findHeader(headers, viRules.targetColumn, templateHeaders);
+  const specialMarkHeader = findHeader(headers, viRules.specialMarkColumn, templateHeaders);
+  const levelHeader =
+    findHeader(headers, "Уровень образования", templateHeaders) ||
+    findHeader(headers, "Уровень подготовки", templateHeaders);
+  const qualHeader = findHeader(headers, "Квалификация", templateHeaders);
 
   const rows = viWorkbookData.rows.map((row) => {
     const next = {};
