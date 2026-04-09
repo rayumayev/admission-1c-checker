@@ -1220,25 +1220,30 @@ function ensureIssues(result) {
   return [];
 }
 
+function normalizeHeaderLookupName(value) {
+  // Снимаем технические суффиксы, добавленные для уникализации: "Поле (2)" -> "Поле".
+  return normalizeText(String(value || "").replace(/\s*\(\d+\)\s*$/u, ""));
+}
+
 function findHeader(headers, expectedName) {
-  const target = normalizeText(expectedName);
+  const target = normalizeHeaderLookupName(expectedName);
   if (!target) return null;
 
   for (const h of headers) {
-    if (normalizeText(h) === target) return h;
+    if (normalizeHeaderLookupName(h) === target) return h;
   }
 
   const byLastSegment = headers.filter((h) => {
     const parts = String(h)
       .split(/\s*\/\s*/)
-      .map((p) => normalizeText(p.trim()))
+      .map((p) => normalizeHeaderLookupName(p.trim()))
       .filter(Boolean);
     return parts.length > 0 && parts[parts.length - 1] === target;
   });
-  if (byLastSegment.length === 1) return byLastSegment[0];
+  if (byLastSegment.length > 0) return byLastSegment[0];
 
-  const byIncludes = headers.filter((h) => normalizeText(h).includes(target));
-  if (byIncludes.length === 1) return byIncludes[0];
+  const byIncludes = headers.filter((h) => normalizeHeaderLookupName(h).includes(target));
+  if (byIncludes.length > 0) return byIncludes[0];
 
   return null;
 }
