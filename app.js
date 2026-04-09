@@ -779,7 +779,7 @@ async function runPnCriteriaChecks(pnWorkbookData, kgRules, benefitsRules, onPro
         issue(
           "kg-token-spacing",
           rowRef,
-          `В названии КГ "${kg}" есть пробелы рядом с разделителем "|". Укажите названия без пробелов (например, "|З|").`
+          `В названии КГ "${kg}" вокруг разделителя "|" должны быть пробелы с двух сторон (например, "БАК | З | Ц | ...").`
         )
       );
     }
@@ -794,16 +794,16 @@ async function runPnCriteriaChecks(pnWorkbookData, kgRules, benefitsRules, onPro
     }
 
     const formToken = tokenByValue(form, kgRules.formTokens);
-    if (!hasTokenSpacingIssue && formToken && !containsToken(kg, formToken)) {
+    if (formToken && !containsToken(kg, formToken)) {
       kgNameIssues.push(issue("form-token", rowRef, `Форма обучения "${form}" не отражена в КГ (ожидали "${formToken}").`));
     }
 
     const financeToken = tokenByValue(finance, kgRules.financeTokens);
-    if (!hasTokenSpacingIssue && financeToken && !containsToken(kg, financeToken)) {
+    if (financeToken && !containsToken(kg, financeToken)) {
       kgNameIssues.push(issue("finance-token", rowRef, `Источник финансирования "${finance}" не отражен в КГ (ожидали "${financeToken}").`));
     }
 
-    if (!hasTokenSpacingIssue && containsToken(kg, kgRules.quotaTokens.foreign)) {
+    if (containsToken(kg, kgRules.quotaTokens.foreign)) {
       if (!isYes(foreignOnly, kgRules)) {
         foreignIssues.push(issue("foreign-only", rowRef, `КГ с "ИН": поле "Только для иностранных граждан" должно быть "Да".`));
       }
@@ -827,7 +827,7 @@ async function runPnCriteriaChecks(pnWorkbookData, kgRules, benefitsRules, onPro
 
     const separateExpected = normalizeText(feature) === normalizeText(kgRules.separateQuotaRule.specialFeatureValue);
     if (separateExpected) {
-      if (!hasTokenSpacingIssue && !containsToken(kg, kgRules.quotaTokens.separate)) {
+      if (!containsToken(kg, kgRules.quotaTokens.separate)) {
         kgNameIssues.push(issue("separate-token", rowRef, `Для "Отдельная квота" в КГ должен быть токен "${kgRules.quotaTokens.separate}".`));
       }
       if (normalizeText(specialRight) !== normalizeText(kgRules.separateQuotaRule.specialRightExpected)) {
@@ -1174,7 +1174,7 @@ async function checkPnViMatch(pnWorkbookData, viWorkbookData, rules, onProgress)
     }
   }
   for (const viRow of viWorkbookData.rows) {
-    const kg = normalizeText(getVal(viRow, viKgHeader));
+    const kg = normalizeKgKey(getVal(viRow, viKgHeader));
     if (!kg || viByKg.has(kg)) continue;
     viByKg.set(kg, viRow);
   }
@@ -1183,7 +1183,7 @@ async function checkPnViMatch(pnWorkbookData, viWorkbookData, rules, onProgress)
     const pnRow = pnWorkbookData.rows[index];
     const rowRef = `Строка ${index + 2}`;
     const kgValue = getVal(pnRow, pnKgHeader);
-    const key = normalizeText(kgValue);
+    const key = normalizeKgKey(kgValue);
     if (!key) continue;
     const viRow = viByKg.get(key);
     if (!viRow) {
@@ -1290,15 +1290,20 @@ function normalizeKgVerticalBarsToAscii(value) {
 
 function containsToken(kgName, token) {
   if (!kgName || !token) return false;
-  const text = normalizeKgVerticalBarsToAscii(kgName).toUpperCase();
+  const text = fixPipeSpacingAroundBars(kgName).toUpperCase();
   const t = String(token).toUpperCase();
-  return text.includes(`|${t}|`) || text.includes(` ${t} `) || text.startsWith(`${t} `) || text.endsWith(` ${t}`) || text === t;
+  const parts = text
+    .split("|")
+    .map((p) => p.trim())
+    .filter(Boolean);
+  if (parts.includes(t)) return true;
+  return text.includes(` ${t} `) || text.startsWith(`${t} `) || text.endsWith(` ${t}`) || text === t;
 }
 
 function hasPipeTokenSpacingIssue(kgName) {
   if (!kgName) return false;
   const text = normalizeKgVerticalBarsToAscii(kgName);
-  return /\|\s+/.test(text) || /\s+\|/.test(text);
+  return /(^|[^ ])\|/.test(text) || /\|([^ ]|$)/.test(text);
 }
 
 function isYes(value, rules) {
@@ -1329,7 +1334,14 @@ function fixWhitespaceInCell(raw) {
 
 function fixPipeSpacingAroundBars(kgName) {
   if (kgName == null || kgName === "") return "";
-  return normalizeKgVerticalBarsToAscii(kgName).replace(/\s*\|\s*/g, "|");
+  return normalizeKgVerticalBarsToAscii(kgName)
+    .replace(/\s*\|\s*/g, " | ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeKgKey(value) {
+  return normalizeText(fixPipeSpacingAroundBars(value));
 }
 
 function buildBenefitPatternsFromRules(benefitsRules) {
@@ -1449,6 +1461,7 @@ function buildCorrectedPnData(pnWorkbookData, kgRules, benefitsRules, templateHe
 function buildCorrectedViData(viWorkbookData, minBallData, spoMinBallData, benefitsRules, kgRules, viRules, templateHeaders = []) {
   const headers = viWorkbookData.headers;
   const patterns = buildBenefitPatternsFromRules(benefitsRules);
+  const kgHeader = findHeader(headers, "Конкурсная группа", templateHeaders);
   const subjectHeader = findHeader(headers, viRules.subjectColumn, templateHeaders);
   const replaceHeader = findHeader(headers, viRules.replaceSubjectColumn, templateHeaders);
   const minScoreHeader = findHeader(headers, viRules.minScoreColumn, templateHeaders);
@@ -1465,6 +1478,9 @@ function buildCorrectedViData(viWorkbookData, minBallData, spoMinBallData, benef
     const next = {};
     for (const header of headers) {
       next[header] = fixWhitespaceInCell(row[header]);
+    }
+    if (kgHeader && next[kgHeader]) {
+      next[kgHeader] = fixPipeSpacingAroundBars(next[kgHeader]);
     }
 
     if (subjectHeader && replaceHeader) {
