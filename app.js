@@ -5,6 +5,7 @@ const DEFAULT_KG_RULES = {
   formTokens: { "очная": "О", "очно-заочная": "ОЗ", "заочная": "З" },
   financeTokens: { "бюджет": "Б", "договор": "Д" },
   quotaTokens: { target: "Ц", special: "К", separate: "ОК", foreign: "ИН", contract: "Д" },
+  codeDirectionMap: {},
   yesValues: ["да", "yes", "true", "1"],
   noValues: ["нет", "no", "false", "0"],
   separateQuotaRule: {
@@ -233,6 +234,7 @@ async function onRunCheck() {
           { id: "columns-pn", title: "Соответствие столбцам", issues: headerIssues.pnIssues },
           { id: "kg-name-rules", title: "Корректность названий КГ", issues: pnCriteria.kgNameIssues },
           { id: "code-in-kg", title: "Код направления в названии КГ", issues: pnCriteria.codeIssues },
+          { id: "code-direction-match", title: "Соответствие кода и направления", issues: pnCriteria.codeDirectionIssues },
           { id: "level-in-kg", title: "Уровень подготовки в названии КГ", issues: pnCriteria.levelIssues },
           { id: "foreign-rules", title: "Правила иностранных КГ", issues: pnCriteria.foreignIssues },
           { id: "rf-only", title: "Проверка столбца Только для граждан РФ", issues: pnCriteria.rfIssues },
@@ -735,6 +737,7 @@ async function runPnCriteriaChecks(pnWorkbookData, kgRules, benefitsRules, onPro
     form: findHeader(headers, "Форма обучения", templateHeaders),
     finance: findHeader(headers, "Источник финансирования", templateHeaders),
     code: findHeader(headers, "Код", templateHeaders),
+    direction: findHeader(headers, "Направление", templateHeaders),
     foreignOnly: findHeader(headers, "Только для иностранных граждан", templateHeaders),
     rfOnly: findHeader(headers, "Только для граждан РФ", templateHeaders),
     targetDetailed: findHeader(headers, "Целевая детализированная квота", templateHeaders),
@@ -744,11 +747,13 @@ async function runPnCriteriaChecks(pnWorkbookData, kgRules, benefitsRules, onPro
 
   const kgNameIssues = [];
   const codeIssues = [];
+  const codeDirectionIssues = [];
   const levelIssues = [];
   const foreignIssues = [];
   const rfIssues = [];
   const quotaFeatureIssues = [];
   const targetDetailedIssues = [];
+  const codeDirectionMap = kgRules.codeDirectionMap || {};
 
   for (let idx = 0; idx < rows.length; idx += 1) {
     const row = rows[idx];
@@ -758,6 +763,7 @@ async function runPnCriteriaChecks(pnWorkbookData, kgRules, benefitsRules, onPro
     const form = getVal(row, h.form);
     const finance = getVal(row, h.finance);
     const code = getVal(row, h.code);
+    const direction = getVal(row, h.direction);
     const foreignOnly = getVal(row, h.foreignOnly);
     const rfOnly = getVal(row, h.rfOnly);
     const targetDetailed = getVal(row, h.targetDetailed);
@@ -777,6 +783,18 @@ async function runPnCriteriaChecks(pnWorkbookData, kgRules, benefitsRules, onPro
 
     if (kg && code && !kg.includes(code)) {
       codeIssues.push(issue("code-missing-in-kg", rowRef, `Код "${code}" отсутствует в названии КГ "${kg}".`));
+    }
+    if (code && direction && Object.prototype.hasOwnProperty.call(codeDirectionMap, code)) {
+      const expectedDirection = codeDirectionMap[code];
+      if (normalizeText(direction) !== normalizeText(expectedDirection)) {
+        codeDirectionIssues.push(
+          issue(
+            "code-direction-mismatch",
+            rowRef,
+            `Для кода "${code}" ожидается направление "${expectedDirection}", но указано "${direction}".`
+          )
+        );
+      }
     }
 
     const levelToken = tokenByValue(level, kgRules.levelTokens);
@@ -869,7 +887,7 @@ async function runPnCriteriaChecks(pnWorkbookData, kgRules, benefitsRules, onPro
     if ((idx + 1) % CHECK_LOOP_YIELD_EVERY === 0) await yieldToUi();
   }
 
-  return { kgNameIssues, codeIssues, levelIssues, foreignIssues, rfIssues, quotaFeatureIssues, targetDetailedIssues };
+  return { kgNameIssues, codeIssues, codeDirectionIssues, levelIssues, foreignIssues, rfIssues, quotaFeatureIssues, targetDetailedIssues };
 }
 
 async function checkViCriteria(viWorkbookData, minBallData, spoMinBallData, benefitsRules, kgRules, viRules, onProgress, templateHeaders = []) {
@@ -1423,6 +1441,8 @@ function buildCorrectedPnData(pnWorkbookData, kgRules, benefitsRules, templateHe
   const h = {
     kg: findHeader(headers, "Конкурсная группа", templateHeaders),
     level: findHeader(headers, "Уровень подготовки", templateHeaders),
+    code: findHeader(headers, "Код", templateHeaders),
+    direction: findHeader(headers, "Направление", templateHeaders),
     benefit: findHeader(headers, "Название льготы", templateHeaders),
     specialMark: findHeader(headers, "Особая отметка", templateHeaders),
     targetDetailed: findHeader(headers, "Целевая детализированная квота", templateHeaders),
@@ -1432,6 +1452,7 @@ function buildCorrectedPnData(pnWorkbookData, kgRules, benefitsRules, templateHe
     specialRight: findHeader(headers, kgRules.separateQuotaRule.specialRightColumn, templateHeaders)
   };
   const qualH = findHeader(headers, "Квалификация", templateHeaders);
+  const codeDirectionMap = kgRules.codeDirectionMap || {};
 
   const rows = pnWorkbookData.rows.map((row) => {
     const next = {};
@@ -1451,6 +1472,12 @@ function buildCorrectedPnData(pnWorkbookData, kgRules, benefitsRules, templateHe
     }
     if (h.level && qualH) {
       next[qualH] = expectedQualificationForLevel(getVal(next, h.level));
+    }
+    if (h.code && h.direction) {
+      const code = getVal(next, h.code);
+      if (code && Object.prototype.hasOwnProperty.call(codeDirectionMap, code)) {
+        next[h.direction] = codeDirectionMap[code];
+      }
     }
     if (h.kg && h.targetDetailed && next[h.kg] && getVal(row, h.targetDetailed)) {
       const should = containsToken(next[h.kg], kgRules.quotaTokens.target) ? "Да" : "Нет";
@@ -1808,6 +1835,7 @@ function getIssueTypeLabel(type) {
     "k-token-feature": "Токен К: Особенности приема",
     "k-token-right": "Токен К: Особое право",
     "code-missing-in-kg": "Код направления в названии КГ",
+    "code-direction-mismatch": "Несоответствие кода и направления",
     "level-token": "Уровень подготовки в названии КГ",
     "foreign-only": "Только для иностранных граждан",
     "foreign-rf": "Только для граждан РФ для ИН",
