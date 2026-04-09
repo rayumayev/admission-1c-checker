@@ -84,6 +84,7 @@ const globalMessageNode = document.getElementById("globalMessage");
 const progressSectionNode = document.getElementById("progressSection");
 const progressLabelNode = document.getElementById("progressLabel");
 const progressPercentNode = document.getElementById("progressPercent");
+const progressRowsNode = document.getElementById("progressRows");
 const progressFillNode = document.getElementById("progressFill");
 const progressTrackNode = progressSectionNode.querySelector(".progress-track");
 const benchmarkSectionNode = document.getElementById("benchmarkSection");
@@ -97,6 +98,10 @@ const fixedTabPanel = document.getElementById("fixedTabPanel");
 const fixedTablesMount = document.getElementById("fixedTablesMount");
 
 const checkedIssues = new Set();
+const rowProgressState = {
+  pn: { done: 0, total: 0 },
+  vi: { done: 0, total: 0 }
+};
 
 Object.values(inputs).forEach((input) => input.addEventListener("change", updateRunButtonState));
 runCheckButton.addEventListener("click", onRunCheck);
@@ -124,6 +129,7 @@ async function onRunCheck() {
   clearFixedPreview();
   checkedIssues.clear();
   clearBenchmark();
+  resetRowProgress();
   setUiBusy(true);
   setProgress(0, "Подготовка проверки...");
   const perf = createPerfTracker();
@@ -172,6 +178,7 @@ async function onRunCheck() {
     const progress = createProgressReporter();
     progress.setPhase(68, 78, "Проверка критериев ПН...");
     perf.start("pn_criteria", "Проверка критериев ПН");
+    updateRowProgress("pn", 0, pnWorkbookData.rows.length);
     const pnCriteria = await runPnCriteriaChecks(
       pnWorkbookData,
       kgRules,
@@ -196,6 +203,7 @@ async function onRunCheck() {
 
     progress.setPhase(85, 92, "Проверка критериев ВИ...");
     perf.start("vi_criteria", "Проверка критериев ВИ");
+    updateRowProgress("vi", 0, viWorkbookData.rows.length);
     const viCriteria = await checkViCriteria(
       viWorkbookData,
       minBallData,
@@ -279,6 +287,8 @@ async function onRunCheck() {
     renderFixedPreview(pnWorkbookData, pnCorrected, viWorkbookData, viCorrected);
     perf.end("render");
     perf.render();
+    updateRowProgress("pn", rowProgressState.pn.total, rowProgressState.pn.total);
+    updateRowProgress("vi", rowProgressState.vi.total, rowProgressState.vi.total);
     if (fixedTabPanel && tabFixedButton) setActiveTab("fixed");
     else setActiveTab("criteria");
 
@@ -389,6 +399,30 @@ function createProgressReporter() {
       setProgress(phaseStart + (phaseEnd - phaseStart) * ratio, label);
     }
   };
+}
+
+function renderRowProgress() {
+  if (!progressRowsNode) return;
+  const pnDone = rowProgressState.pn.done;
+  const pnTotal = rowProgressState.pn.total;
+  const viDone = rowProgressState.vi.done;
+  const viTotal = rowProgressState.vi.total;
+  progressRowsNode.textContent = `ПН: ${pnDone}/${pnTotal}, ВИ: ${viDone}/${viTotal}`;
+}
+
+function resetRowProgress() {
+  rowProgressState.pn.done = 0;
+  rowProgressState.pn.total = 0;
+  rowProgressState.vi.done = 0;
+  rowProgressState.vi.total = 0;
+  renderRowProgress();
+}
+
+function updateRowProgress(kind, done, total) {
+  if (!rowProgressState[kind]) return;
+  rowProgressState[kind].done = Math.max(0, Number(done) || 0);
+  rowProgressState[kind].total = Math.max(0, Number(total) || 0);
+  renderRowProgress();
 }
 
 async function readCombinedRules(file) {
@@ -884,6 +918,7 @@ async function runPnCriteriaChecks(pnWorkbookData, kgRules, benefitsRules, onPro
       }
     }
     if (onProgress) onProgress(idx + 1, rows.length, `Проверка критериев ПН... ${idx + 1}/${rows.length}`);
+    updateRowProgress("pn", idx + 1, rows.length);
     if ((idx + 1) % CHECK_LOOP_YIELD_EVERY === 0) await yieldToUi();
   }
 
@@ -1041,6 +1076,7 @@ async function checkViCriteria(viWorkbookData, minBallData, spoMinBallData, bene
       }
     }
     if (onProgress) onProgress(index + 1, viWorkbookData.rows.length, `Проверка критериев ВИ... ${index + 1}/${viWorkbookData.rows.length}`);
+    updateRowProgress("vi", index + 1, viWorkbookData.rows.length);
     if ((index + 1) % CHECK_LOOP_YIELD_EVERY === 0) await yieldToUi();
   }
 
