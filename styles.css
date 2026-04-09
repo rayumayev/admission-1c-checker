@@ -276,6 +276,12 @@ button:disabled {
   margin-bottom: 7px;
 }
 
+.progress-rows {
+  font-size: 0.85rem;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+
 .progress-track {
   width: 100%;
   height: 10px;
