@@ -261,7 +261,7 @@ async function onRunCheck() {
           { id: "max-ball-vi", title: "Максимальные баллы ВИ", issues: viCriteria.maxIssues },
           { id: "min-ball-vi", title: "Минимальные баллы ВИ", issues: viCriteria.minIssues },
           { id: "rule-21-vi", title: "Правило 21 балла", issues: viCriteria.rule21Issues },
-          { id: "rule-41-vi", title: "Правило 41 балла (СПО)", issues: viCriteria.rule41Issues },
+          { id: "rule-41-vi", title: "Правило 41 балла: для предметов СПО", issues: viCriteria.rule41Issues },
           { id: "spo-column-vi", title: "Предметы СПО только в «Заменяемый предмет»", issues: viCriteria.spoColumnIssues },
           { id: "special-mark-vi", title: "Формулировки особой отметки", issues: viCriteria.specialMarkIssues },
           { id: "vi-whitespace", title: "Пробелы в значениях ячеек", issues: ensureIssues(viWhitespaceCriterion) },
@@ -1046,20 +1046,6 @@ async function checkViCriteria(viWorkbookData, minBallData, spoMinBallData, bene
             `Для предметов СПО минимальный балл должен быть 41. Для предмета «${chosenSubject}» указано ${minScore}.`
           )
         );
-      }
-
-      if (minScore === 41 && !spoSubjectInBaseColumn) {
-        const spoKey = normalizeSpoSubjectKey(chosenSubject);
-        const spoRef = spoMinBallData.spoMap.get(spoKey);
-        if (!spoRef) {
-          rule41Issues.push(
-            issue(
-              "vi-rule-41-spo",
-              rowRef,
-              `Минимальный балл 41 допустим только для предметов СПО. Предмет «${chosenSubject}» не найден в spo_min_ball.txt.`
-            )
-          );
-        }
       }
     }
 
@@ -1889,8 +1875,7 @@ function getIssueTypeLabel(type) {
     "vi-min-id": "Минимальный балл для ИД",
     "vi-rule-21-type": "Правило 21 балла: тип испытания",
     "vi-rule-21-replace": "Правило 21 балла: заменяемый предмет",
-    "vi-rule-41-spo": "Правило 41 балла (СПО)",
-    "vi-rule-41-score": "Правило 41 балла (СПО): значение балла",
+    "vi-rule-41-score": "Правило 41 балла: минимум 41 для предметов СПО",
     "whitespace-trim": "Пробелы в начале/конце",
     "whitespace-double": "Двойные пробелы",
     "qualification-missing-columns": "Отсутствуют столбцы квалификации",
