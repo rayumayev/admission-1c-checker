@@ -303,6 +303,11 @@ button:disabled {
   background: #fbfdff;
 }
 
+.criteria-block.criteria-block-has-errors {
+  background: #fff1f0;
+  border-color: #f4c7c3;
+}
+
 .criteria-section {
   margin: 14px 0 18px;
   border-radius: 12px;

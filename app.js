@@ -233,10 +233,10 @@ async function onRunCheck() {
           { id: "columns-pn", title: "Соответствие столбцам", issues: headerIssues.pnIssues },
           { id: "kg-name-rules", title: "Корректность названий КГ", issues: pnCriteria.kgNameIssues },
           { id: "code-in-kg", title: "Код направления в названии КГ", issues: pnCriteria.codeIssues },
-          { id: "level-in-kg", title: "Уровень образования в названии КГ", issues: pnCriteria.levelIssues },
+          { id: "level-in-kg", title: "Уровень подготовки в названии КГ", issues: pnCriteria.levelIssues },
           { id: "foreign-rules", title: "Правила иностранных КГ", issues: pnCriteria.foreignIssues },
           { id: "rf-only", title: "Проверка столбца Только для граждан РФ", issues: pnCriteria.rfIssues },
-          { id: "benefits", title: "Проверка названий льгот", issues: pnCriteria.benefitIssues },
+          { id: "pn-ok-k-rules", title: "Правила ОК/К в названии КГ", issues: pnCriteria.quotaFeatureIssues },
           { id: "target-detailed", title: "Целевая детализированная квота", issues: pnCriteria.targetDetailedIssues },
           { id: "pn-whitespace", title: "Пробелы в значениях ячеек", issues: ensureIssues(pnWhitespaceCriterion) },
           { id: "pn-qualification", title: "Квалификация по уровню образования", issues: ensureIssues(pnQualificationCriterion) },
@@ -731,15 +731,13 @@ async function runPnCriteriaChecks(pnWorkbookData, kgRules, benefitsRules, onPro
   const rows = pnWorkbookData.rows;
   const h = {
     kg: findHeader(headers, "Конкурсная группа", templateHeaders),
-    level: findHeader(headers, "Уровень образования", templateHeaders),
+    level: findHeader(headers, "Уровень подготовки", templateHeaders),
     form: findHeader(headers, "Форма обучения", templateHeaders),
     finance: findHeader(headers, "Источник финансирования", templateHeaders),
     code: findHeader(headers, "Код", templateHeaders),
     foreignOnly: findHeader(headers, "Только для иностранных граждан", templateHeaders),
     rfOnly: findHeader(headers, "Только для граждан РФ", templateHeaders),
     targetDetailed: findHeader(headers, "Целевая детализированная квота", templateHeaders),
-    benefit: findHeader(headers, "Название льготы", templateHeaders),
-    specialMark: findHeader(headers, "Особая отметка", templateHeaders),
     specialFeature: findHeader(headers, kgRules.separateQuotaRule.specialFeatureColumn, templateHeaders),
     specialRight: findHeader(headers, kgRules.separateQuotaRule.specialRightColumn, templateHeaders)
   };
@@ -749,13 +747,8 @@ async function runPnCriteriaChecks(pnWorkbookData, kgRules, benefitsRules, onPro
   const levelIssues = [];
   const foreignIssues = [];
   const rfIssues = [];
-  const benefitIssues = [];
+  const quotaFeatureIssues = [];
   const targetDetailedIssues = [];
-  const benefitPatterns = (benefitsRules.replacements || []).map((item) => ({
-    fromRaw: item.from,
-    fromNorm: normalizeBenefitText(item.from),
-    to: item.to
-  }));
 
   for (let idx = 0; idx < rows.length; idx += 1) {
     const row = rows[idx];
@@ -768,8 +761,6 @@ async function runPnCriteriaChecks(pnWorkbookData, kgRules, benefitsRules, onPro
     const foreignOnly = getVal(row, h.foreignOnly);
     const rfOnly = getVal(row, h.rfOnly);
     const targetDetailed = getVal(row, h.targetDetailed);
-    const benefit = getVal(row, h.benefit);
-    const specialMark = getVal(row, h.specialMark);
     const feature = getVal(row, h.specialFeature);
     const specialRight = getVal(row, h.specialRight);
     const hasTokenSpacingIssue = hasPipeTokenSpacingIssue(kg);
@@ -803,13 +794,20 @@ async function runPnCriteriaChecks(pnWorkbookData, kgRules, benefitsRules, onPro
       kgNameIssues.push(issue("finance-token", rowRef, `Источник финансирования "${finance}" не отражен в КГ (ожидали "${financeToken}").`));
     }
 
-    if (containsToken(kg, kgRules.quotaTokens.foreign)) {
-      if (!isYes(foreignOnly, kgRules)) {
+    const hasForeignToken = containsToken(kg, kgRules.quotaTokens.foreign);
+    const foreignOnlyYes = isYes(foreignOnly, kgRules);
+    if (hasForeignToken) {
+      if (!foreignOnlyYes) {
         foreignIssues.push(issue("foreign-only", rowRef, `КГ с "ИН": поле "Только для иностранных граждан" должно быть "Да".`));
       }
       if (!isNo(rfOnly, kgRules)) {
         foreignIssues.push(issue("foreign-rf", rowRef, `КГ с "ИН": поле "Только для граждан РФ" должно быть "Нет".`));
       }
+    }
+    if (foreignOnlyYes && !hasForeignToken) {
+      foreignIssues.push(
+        issue("foreign-token-missing", rowRef, `Если поле "Только для иностранных граждан" = "Да", в названии КГ должен быть токен "ИН".`)
+      );
     }
 
     if (rfOnly && !isNo(rfOnly, kgRules)) {
@@ -825,28 +823,44 @@ async function runPnCriteriaChecks(pnWorkbookData, kgRules, benefitsRules, onPro
       }
     }
 
-    const separateExpected = normalizeText(feature) === normalizeText(kgRules.separateQuotaRule.specialFeatureValue);
-    if (separateExpected) {
-      if (!containsToken(kg, kgRules.quotaTokens.separate)) {
-        kgNameIssues.push(issue("separate-token", rowRef, `Для "Отдельная квота" в КГ должен быть токен "${kgRules.quotaTokens.separate}".`));
+    const hasOkToken = containsToken(kg, kgRules.quotaTokens.separate);
+    if (hasOkToken) {
+      if (normalizeText(feature) !== normalizeText(kgRules.separateQuotaRule.specialFeatureValue)) {
+        quotaFeatureIssues.push(
+          issue(
+            "ok-token-feature",
+            rowRef,
+            `Для КГ с токеном "${kgRules.quotaTokens.separate}" поле "${kgRules.separateQuotaRule.specialFeatureColumn}" должно быть "${kgRules.separateQuotaRule.specialFeatureValue}".`
+          )
+        );
       }
       if (normalizeText(specialRight) !== normalizeText(kgRules.separateQuotaRule.specialRightExpected)) {
-        kgNameIssues.push(issue("special-right", rowRef, `Для "Отдельная квота" поле "Особое право" должно быть "${kgRules.separateQuotaRule.specialRightExpected}".`));
+        quotaFeatureIssues.push(
+          issue(
+            "ok-token-right",
+            rowRef,
+            `Для КГ с токеном "${kgRules.quotaTokens.separate}" поле "${kgRules.separateQuotaRule.specialRightColumn}" должно быть "${kgRules.separateQuotaRule.specialRightExpected}".`
+          )
+        );
       }
     }
 
-    const benefitColumns = [
-      { header: h.benefit, value: benefit },
-      { header: h.specialMark, value: specialMark }
-    ].filter((entry) => entry.header && entry.value);
-    for (const column of benefitColumns) {
-      const expected = applyBenefitToValue(column.value, benefitPatterns);
-      if (expected !== null) {
-        benefitIssues.push(
+    if (containsToken(kg, kgRules.quotaTokens.special)) {
+      if (normalizeText(feature) !== normalizeText("Общие места")) {
+        quotaFeatureIssues.push(
           issue(
-            "benefit-replace",
+            "k-token-feature",
             rowRef,
-            `Некорректная формулировка в столбце "${column.header}". Найдено: "${String(column.value).trim()}". Значение должно быть заменено на "${expected}".`
+            `Для КГ с токеном "${kgRules.quotaTokens.special}" поле "${kgRules.separateQuotaRule.specialFeatureColumn}" должно быть "Общие места".`
+          )
+        );
+      }
+      if (normalizeText(specialRight) !== normalizeText("Да")) {
+        quotaFeatureIssues.push(
+          issue(
+            "k-token-right",
+            rowRef,
+            `Для КГ с токеном "${kgRules.quotaTokens.special}" поле "${kgRules.separateQuotaRule.specialRightColumn}" должно быть "Да".`
           )
         );
       }
@@ -855,7 +869,7 @@ async function runPnCriteriaChecks(pnWorkbookData, kgRules, benefitsRules, onPro
     if ((idx + 1) % CHECK_LOOP_YIELD_EVERY === 0) await yieldToUi();
   }
 
-  return { kgNameIssues, codeIssues, levelIssues, foreignIssues, rfIssues, benefitIssues, targetDetailedIssues };
+  return { kgNameIssues, codeIssues, levelIssues, foreignIssues, rfIssues, quotaFeatureIssues, targetDetailedIssues };
 }
 
 async function checkViCriteria(viWorkbookData, minBallData, spoMinBallData, benefitsRules, kgRules, viRules, onProgress, templateHeaders = []) {
@@ -909,7 +923,8 @@ async function checkViCriteria(viWorkbookData, minBallData, spoMinBallData, bene
     const maxScore = Number(String(maxRaw).replace(",", "."));
     const isTarget = isYes(targetFlag, kgRules);
 
-    if (baseSubject && spoMinBallData.spoMap.has(normalizeSpoSubjectKey(baseSubject))) {
+    const spoSubjectInBaseColumn = isSpoSubject(baseSubject, spoMinBallData.spoMap);
+    if (spoSubjectInBaseColumn) {
       spoColumnIssues.push(
         issue(
           "spo-subject-in-base",
@@ -918,9 +933,6 @@ async function checkViCriteria(viWorkbookData, minBallData, spoMinBallData, bene
         )
       );
     }
-    const spoSubjectInBaseColumn = Boolean(
-      baseSubject && spoMinBallData.spoMap.has(normalizeSpoSubjectKey(baseSubject))
-    );
 
     if (!Number.isNaN(maxScore)) {
       const expectedMax = getExpectedMax(formType, isTarget, viRules);
@@ -970,6 +982,17 @@ async function checkViCriteria(viWorkbookData, minBallData, spoMinBallData, bene
         if (altSubject) {
           rule21Issues.push(issue("vi-rule-21-replace", rowRef, "При минимальном балле 21 поле \"Заменяемый предмет\" должно быть пустым."));
         }
+      }
+
+      const chosenSubjectIsSpo = isSpoSubject(chosenSubject, spoMinBallData.spoMap);
+      if (chosenSubjectIsSpo && minScore !== 41) {
+        rule41Issues.push(
+          issue(
+            "vi-rule-41-score",
+            rowRef,
+            `Для предметов СПО минимальный балл должен быть 41. Для предмета «${chosenSubject}» указано ${minScore}.`
+          )
+        );
       }
 
       if (minScore === 41 && !spoSubjectInBaseColumn) {
@@ -1037,9 +1060,7 @@ async function checkWhitespaceIssues(workbookData, fileLabel, onProgress) {
 
 async function checkQualificationByLevel(workbookData, fileLabel, onProgress, templateHeaders = []) {
   const issues = [];
-  const levelHeader =
-    findHeader(workbookData.headers, "Уровень образования", templateHeaders) ||
-    findHeader(workbookData.headers, "Уровень подготовки", templateHeaders);
+  const levelHeader = findHeader(workbookData.headers, "Уровень подготовки", templateHeaders);
   const qualificationHeader = findHeader(workbookData.headers, "Квалификация", templateHeaders);
   if (!levelHeader || !qualificationHeader) {
     return {
@@ -1047,7 +1068,7 @@ async function checkQualificationByLevel(workbookData, fileLabel, onProgress, te
         issue(
           "qualification-missing-columns",
           fileLabel,
-          `[${fileLabel}] Не найдены столбцы "Уровень образования" (или "Уровень подготовки") и/или "Квалификация".`
+          `[${fileLabel}] Не найдены столбцы "Уровень подготовки" и/или "Квалификация".`
         )
       ]
     };
@@ -1104,6 +1125,13 @@ function normalizeSpoSubjectKey(subject) {
   if (raw.length > MAX_NORMALIZE_CHARS) raw = raw.slice(0, MAX_NORMALIZE_CHARS);
   const withoutPrefix = raw.replace(/^\s*спо\s*[:;,-]?\s*/i, "");
   return normalizeText(withoutPrefix);
+}
+
+function isSpoSubject(subject, spoMap) {
+  if (!subject || !spoMap || spoMap.size === 0) return false;
+  const key = normalizeSpoSubjectKey(subject);
+  if (!key) return false;
+  return spoMap.has(key);
 }
 
 /**
@@ -1394,9 +1422,7 @@ function buildCorrectedPnData(pnWorkbookData, kgRules, benefitsRules, templateHe
   const patterns = buildBenefitPatternsFromRules(benefitsRules);
   const h = {
     kg: findHeader(headers, "Конкурсная группа", templateHeaders),
-    level:
-      findHeader(headers, "Уровень образования", templateHeaders) ||
-      findHeader(headers, "Уровень подготовки", templateHeaders),
+    level: findHeader(headers, "Уровень подготовки", templateHeaders),
     benefit: findHeader(headers, "Название льготы", templateHeaders),
     specialMark: findHeader(headers, "Особая отметка", templateHeaders),
     targetDetailed: findHeader(headers, "Целевая детализированная квота", templateHeaders),
@@ -1469,9 +1495,7 @@ function buildCorrectedViData(viWorkbookData, minBallData, spoMinBallData, benef
   const testFormHeader = findHeader(headers, viRules.testFormColumn, templateHeaders);
   const targetHeader = findHeader(headers, viRules.targetColumn, templateHeaders);
   const specialMarkHeader = findHeader(headers, viRules.specialMarkColumn, templateHeaders);
-  const levelHeader =
-    findHeader(headers, "Уровень образования", templateHeaders) ||
-    findHeader(headers, "Уровень подготовки", templateHeaders);
+  const levelHeader = findHeader(headers, "Уровень подготовки", templateHeaders);
   const qualHeader = findHeader(headers, "Квалификация", templateHeaders);
 
   const rows = viWorkbookData.rows.map((row) => {
@@ -1486,7 +1510,7 @@ function buildCorrectedViData(viWorkbookData, minBallData, spoMinBallData, benef
     if (subjectHeader && replaceHeader) {
       const base = next[subjectHeader];
       const alt = next[replaceHeader];
-      if (base && spoMinBallData.spoMap.has(normalizeSpoSubjectKey(base)) && !String(alt || "").trim()) {
+      if (isSpoSubject(base, spoMinBallData.spoMap) && !String(alt || "").trim()) {
         next[replaceHeader] = base;
         next[subjectHeader] = "";
       }
@@ -1721,7 +1745,8 @@ function renderCriterionBlock(criterion) {
   const issues = Array.isArray(criterion && criterion.issues) ? criterion.issues : [];
   const details = document.createElement("details");
   details.className = "criteria-block";
-  details.open = issues.length > 0;
+  if (issues.length > 0) details.classList.add("criteria-block-has-errors");
+  details.open = false;
   const summary = document.createElement("summary");
   summary.textContent = `${criterion.title || "Критерий"} (${issues.length} ошибок)`;
   details.appendChild(summary);
@@ -1778,10 +1803,15 @@ function getIssueTypeLabel(type) {
     "kg-token-spacing": "Пробелы вокруг токенов в названии КГ",
     "separate-token": "Признак отдельной квоты",
     "special-right": "Особое право для отдельной квоты",
+    "ok-token-feature": "Токен ОК: Особенности приема",
+    "ok-token-right": "Токен ОК: Особое право",
+    "k-token-feature": "Токен К: Особенности приема",
+    "k-token-right": "Токен К: Особое право",
     "code-missing-in-kg": "Код направления в названии КГ",
-    "level-token": "Уровень образования в названии КГ",
+    "level-token": "Уровень подготовки в названии КГ",
     "foreign-only": "Только для иностранных граждан",
     "foreign-rf": "Только для граждан РФ для ИН",
+    "foreign-token-missing": "Токен ИН для иностранных КГ",
     "rf-no": "Только для граждан РФ",
     "target-detailed": "Целевая детализированная квота",
     "missing-required-columns": "Отсутствуют обязательные столбцы",
@@ -1796,6 +1826,7 @@ function getIssueTypeLabel(type) {
     "vi-rule-21-type": "Правило 21 балла: тип испытания",
     "vi-rule-21-replace": "Правило 21 балла: заменяемый предмет",
     "vi-rule-41-spo": "Правило 41 балла (СПО)",
+    "vi-rule-41-score": "Правило 41 балла (СПО): значение балла",
     "whitespace-trim": "Пробелы в начале/конце",
     "whitespace-double": "Двойные пробелы",
     "qualification-missing-columns": "Отсутствуют столбцы квалификации",
