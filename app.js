@@ -240,6 +240,15 @@ async function onRunCheck() {
       progress.step
     );
     perf.end("vi_subject_sequence");
+    perf.start("vi_combination_counts", "Структура предметов ВИ (3 без замены + ИД)");
+    const viCombinationCountsCriterion = await checkViCombinationSubjectCounts(
+      viWorkbookData,
+      viRules,
+      kgRules,
+      viTemplateHeaders.headers,
+      progress.step
+    );
+    perf.end("vi_combination_counts");
     progress.setPhase(92, 95, "Проверка пробелов ВИ...");
     perf.start("vi_spaces", "Проверка пробелов ВИ");
     const viWhitespaceCriterion = await checkWhitespaceIssues(viWorkbookData, "ВИ", progress.step);
@@ -294,6 +303,11 @@ async function onRunCheck() {
             id: "vi-subject-sequence",
             title: "Порядок предметов (КГ, базовый вид образования, льгота, особая отметка)",
             issues: ensureIssues(viSubjectSequenceCriterion)
+          },
+          {
+            id: "vi-combination-counts",
+            title: "Структура ВИ: предметы без замены и ИД в конце (для КГ с «ИН» — 2 предмета, иначе 3)",
+            issues: ensureIssues(viCombinationCountsCriterion)
           },
           { id: "vi-whitespace", title: "Пробелы в значениях ячеек", issues: ensureIssues(viWhitespaceCriterion) },
           { id: "vi-qualification", title: "Квалификация по уровню образования", issues: ensureIssues(viQualificationCriterion) }
@@ -1301,6 +1315,189 @@ async function checkViSubjectSequence(viWorkbookData, viRules, _kgRules, templat
   return { issues };
 }
 
+/**
+ * Внутри КГ для каждой комбинации «Базовый вид образования + Льгота + Особая отметка»:
+ * строки с заполненным «Предмет», пустым «Заменяемый предмет» и не ИД — обычно 3 шт. (три разных предмета);
+ * для КГ с токеном «ИН» в названии — допустимо 2 шт. (два разных предмета);
+ * ровно одна строка ИД; последняя строка группы — ИД (строки с заменами не считаются).
+ */
+async function checkViCombinationSubjectCounts(viWorkbookData, viRules, kgRules, templateHeaders, onProgress) {
+  const issues = [];
+  const groupColumnNames = Array.isArray(viRules.subjectSequenceGroupColumns)
+    ? viRules.subjectSequenceGroupColumns
+    : DEFAULT_VI_RULES.subjectSequenceGroupColumns;
+  const resolved = groupColumnNames.map((name) => ({
+    source: name,
+    header: findHeader(viWorkbookData.headers, name, templateHeaders)
+  }));
+  const subjectHeader = findHeader(viWorkbookData.headers, viRules.subjectColumn, templateHeaders);
+  const replaceHeader = findHeader(viWorkbookData.headers, viRules.replaceSubjectColumn, templateHeaders);
+  const testFormHeader = findHeader(viWorkbookData.headers, viRules.testFormColumn, templateHeaders);
+
+  const missing = resolved.filter((x) => !x.header).map((x) => `«${x.source}»`);
+  if (!subjectHeader) missing.push(`«${viRules.subjectColumn}»`);
+  if (!replaceHeader) missing.push(`«${viRules.replaceSubjectColumn}»`);
+  if (!testFormHeader) missing.push(`«${viRules.testFormColumn}»`);
+
+  if (missing.length > 0) {
+    issues.push(
+      issue(
+        "vi-combination-missing-columns",
+        "ВИ",
+        `Для критерия структуры предметов ВИ не найдены столбцы: ${missing.join(", ")}.`
+      )
+    );
+    return { issues };
+  }
+
+  const [kgHeader, baseHeader, benefitHeader, specialMarkHeader] = resolved.map((x) => x.header);
+  const rows = viWorkbookData.rows;
+  const idMark = normalizeText(
+    viRules.individualAchievementSubjectIncludes ||
+      DEFAULT_VI_RULES.individualAchievementSubjectIncludes ||
+      "индивидуальное достижение"
+  );
+
+  function rowIsId(row) {
+    const form = getVal(row, testFormHeader);
+    if (detectViFormType(form, viRules) === "id") return true;
+    const subj = getVal(row, subjectHeader);
+    if (idMark && normalizeText(subj).includes(idMark)) return true;
+    return false;
+  }
+
+  function subjectOf(row) {
+    return String(getVal(row, subjectHeader)).trim();
+  }
+
+  function replaceOf(row) {
+    return String(getVal(row, replaceHeader)).trim();
+  }
+
+  /** @type Map<string, { kgExample: string, combos: Map<string, { baseEx: string, benefitEx: string, markEx: string, items: { rowIndex: number, row: object }[] }> }> */
+  const byKg = new Map();
+
+  function normPart(row, header) {
+    const value = getVal(row, header);
+    return normalizeText(value) || "<empty>";
+  }
+
+  for (let i = 0; i < rows.length; i += 1) {
+    const row = rows[i];
+    const kgKey = normPart(row, kgHeader);
+    const baseKey = normPart(row, baseHeader);
+    const benefitKey = normPart(row, benefitHeader);
+    const markKey = normPart(row, specialMarkHeader);
+    const tripleKey = `${baseKey}\x1e${benefitKey}\x1e${markKey}`;
+
+    if (!byKg.has(kgKey)) {
+      byKg.set(kgKey, {
+        kgExample: getVal(row, kgHeader) || "(пусто)",
+        combos: new Map()
+      });
+    }
+    const bucket = byKg.get(kgKey);
+    if (!bucket.combos.has(tripleKey)) {
+      bucket.combos.set(tripleKey, {
+        baseEx: getVal(row, baseHeader) || "(пусто)",
+        benefitEx: getVal(row, benefitHeader) || "(пусто)",
+        markEx: getVal(row, specialMarkHeader) || "(пусто)",
+        items: []
+      });
+    }
+    bucket.combos.get(tripleKey).items.push({ rowIndex: i, row });
+
+    if (onProgress) onProgress(i + 1, rows.length, `Проверка структуры предметов ВИ... ${i + 1}/${rows.length}`);
+    updateRowProgress("vi", i + 1, rows.length);
+    if ((i + 1) % CHECK_LOOP_YIELD_EVERY === 0) await yieldToUi();
+  }
+
+  function comboLabel(c) {
+    return `[Базовый вид: «${c.baseEx}», Льгота: «${c.benefitEx}», Особая отметка: «${c.markEx}»]`;
+  }
+
+  let comboIter = 0;
+  for (const bucket of byKg.values()) {
+    const sortedEntries = Array.from(bucket.combos.entries()).sort(([a], [b]) => a.localeCompare(b));
+    for (const [, combo] of sortedEntries) {
+      const items = combo.items;
+      if (items.length === 0) continue;
+
+      const ctx = comboLabel(combo);
+      const kgRef = `КГ "${bucket.kgExample}"`;
+      const foreignKg =
+        kgRules && kgRules.quotaTokens && containsToken(bucket.kgExample, kgRules.quotaTokens.foreign);
+      const expectedBase = foreignKg ? 2 : 3;
+      const baseHint = foreignKg
+        ? `Для КГ с токеном «${kgRules.quotaTokens.foreign}» в названии допускается ${expectedBase} предмета без замены.`
+        : "";
+
+      const baseRows = [];
+      for (const { rowIndex, row } of items) {
+        if (rowIsId(row)) continue;
+        if (replaceOf(row)) continue;
+        const subj = subjectOf(row);
+        if (!subj) continue;
+        baseRows.push({ rowIndex, subj, subjNorm: normalizeText(subj) });
+      }
+
+      const idItems = items.filter(({ row }) => rowIsId(row));
+
+      if (baseRows.length !== expectedBase) {
+        const extra = baseHint ? ` ${baseHint}` : "";
+        issues.push(
+          issue(
+            "vi-combination-structure",
+            kgRef,
+            `В конкурсной группе "${bucket.kgExample}" для комбинации ${ctx} должно быть ровно ${expectedBase} строки с заполненным «Предмет», пустым «Заменяемый предмет» и без индивидуального достижения (варианты замены в отдельных строках не считаются). Сейчас таких строк: ${baseRows.length}.${extra}`
+          )
+        );
+      } else {
+        const uniq = new Set(baseRows.map((b) => b.subjNorm));
+        if (uniq.size !== expectedBase) {
+          const subjList = baseRows.map((b) => `«${b.subj}» (стр. ${b.rowIndex + 2})`).join(", ");
+          const numWord = expectedBase === 2 ? "двум" : "трём";
+          issues.push(
+            issue(
+              "vi-combination-structure",
+              kgRef,
+              `В конкурсной группе "${bucket.kgExample}" для комбинации ${ctx} ${expectedBase} строки без замены должны относиться к ${numWord} разным предметам. Найдено: ${subjList}.${baseHint ? ` ${baseHint}` : ""}`
+            )
+          );
+        }
+      }
+
+      if (idItems.length !== 1) {
+        issues.push(
+          issue(
+            "vi-combination-structure",
+            kgRef,
+            `В конкурсной группе "${bucket.kgExample}" для комбинации ${ctx} должна быть ровно одна строка индивидуального достижения. Сейчас: ${idItems.length}.`
+          )
+        );
+      }
+
+      if (idItems.length === 1) {
+        const last = items[items.length - 1];
+        if (!rowIsId(last.row)) {
+          issues.push(
+            issue(
+              "vi-combination-structure",
+              `Строка ${last.rowIndex + 2}`,
+              `В конкурсной группе "${bucket.kgExample}" для комбинации ${ctx} последняя строка группы должна быть индивидуальным достижением.`
+            )
+          );
+        }
+      }
+
+      comboIter += 1;
+      if (comboIter % CHECK_LOOP_YIELD_EVERY === 0) await yieldToUi();
+    }
+  }
+
+  return { issues };
+}
+
 async function checkWhitespaceIssues(workbookData, fileLabel, onProgress) {
   const issues = [];
   for (let rowIndex = 0; rowIndex < workbookData.rows.length; rowIndex += 1) {
@@ -2143,7 +2340,9 @@ function getIssueTypeLabel(type) {
     "vi-seq-id-not-last": "Порядок предметов ВИ: ИД не в конце группы",
     "vi-seq-replace-without-base": "Порядок предметов ВИ: замена без базовой строки",
     "vi-seq-duplicate-base": "Порядок предметов ВИ: дублирование строки без замены",
-    "vi-seq-subject-order": "Порядок предметов ВИ: нарушен порядок или блок предмета"
+    "vi-seq-subject-order": "Порядок предметов ВИ: нарушен порядок или блок предмета",
+    "vi-combination-missing-columns": "Структура предметов ВИ: нет столбцов",
+    "vi-combination-structure": "Структура предметов ВИ: предметы без замены и ИД в конце (ИН — 2, иначе 3)"
   };
   return map[type] || "Прочие ошибки";
 }
