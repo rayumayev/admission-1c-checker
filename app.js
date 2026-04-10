@@ -29,6 +29,10 @@ const DEFAULT_BENEFITS_RULES = {
     {
       from: "Принадлежность к детям граждан, лиц, военнослужащих погибших/получивших увечье в ходе СВО либо удостоены звания Героя Российской Федерации или награждены тремя орденами Мужества",
       to: "Принадлежность к детям граждан, лиц, военнослужащих погибших/получивших увечье в ходе СВО либо удостоены звания Героя Российской Федерации или награжд"
+    },
+    {
+      from: "Инвалиды I и II групп;Инвалиды вследствие военной травмы или заболевания, полученных в период прохождения военной службы",
+      to: "Инвалиды I и II групп;Инвалиды вследствие военной травмы или заболевания, полученных в период прохождения военной службы;Инвалид III группы"
     }
   ]
 };
@@ -68,6 +72,11 @@ const DEFAULT_VI_RULES = {
   ],
   individualAchievementSubjectIncludes: "индивидуальное достижение"
 };
+
+const VI_HIGHER_EDUCATION_BENEFIT_FROM =
+  "Инвалиды I и II групп;Инвалиды вследствие военной травмы или заболевания, полученных в период прохождения военной службы";
+const VI_HIGHER_EDUCATION_BENEFIT_TO =
+  "Инвалиды I и II групп;Инвалиды вследствие военной травмы или заболевания, полученных в период прохождения военной службы;Инвалид III группы";
 
 /** Защита от зависаний на «случайных» мегабайтных ячейках Excel (нормализация и .includes по ним линейно дороги). */
 const MAX_NORMALIZE_CHARS = 65536;
@@ -280,6 +289,7 @@ async function onRunCheck() {
           { id: "rule-41-vi", title: "Правило 41 балла: для предметов СПО", issues: viCriteria.rule41Issues },
           { id: "spo-column-vi", title: "Предметы СПО только в «Заменяемый предмет»", issues: viCriteria.spoColumnIssues },
           { id: "special-mark-vi", title: "Формулировки особой отметки", issues: viCriteria.specialMarkIssues },
+          { id: "benefit-vi-he", title: "Формулировки льготы (ВО)", issues: viCriteria.benefitHigherEduIssues },
           {
             id: "vi-subject-sequence",
             title: "Порядок предметов (КГ, базовый вид образования, льгота, особая отметка)",
@@ -955,6 +965,8 @@ async function checkViCriteria(viWorkbookData, minBallData, spoMinBallData, bene
   const testTypeHeader = findHeader(viWorkbookData.headers, viRules.testTypeColumn, templateHeaders);
   const targetHeader = findHeader(viWorkbookData.headers, viRules.targetColumn, templateHeaders);
   const specialMarkHeader = findHeader(viWorkbookData.headers, viRules.specialMarkColumn, templateHeaders);
+  const baseEducationHeader = findHeader(viWorkbookData.headers, "Базовый вид образования", templateHeaders);
+  const benefitHeader = findHeader(viWorkbookData.headers, "Льгота", templateHeaders);
 
   const maxIssues = [];
   const minIssues = [];
@@ -962,6 +974,7 @@ async function checkViCriteria(viWorkbookData, minBallData, spoMinBallData, bene
   const rule41Issues = [];
   const spoColumnIssues = [];
   const specialMarkIssues = [];
+  const benefitHigherEduIssues = [];
   const benefitPatterns = (benefitsRules.replacements || []).map((item) => ({
     fromRaw: item.from,
     fromNorm: normalizeBenefitText(item.from),
@@ -991,6 +1004,8 @@ async function checkViCriteria(viWorkbookData, minBallData, spoMinBallData, bene
     const testType = getVal(row, testTypeHeader);
     const targetFlag = getVal(row, targetHeader);
     const specialMark = getVal(row, specialMarkHeader);
+    const baseEducation = getVal(row, baseEducationHeader);
+    const benefit = getVal(row, benefitHeader);
 
     const formType = detectViFormType(form, viRules);
     const minScore = Number(String(minRaw).replace(",", "."));
@@ -1082,12 +1097,21 @@ async function checkViCriteria(viWorkbookData, minBallData, spoMinBallData, bene
         );
       }
     }
+    if (isHigherEducationBase(baseEducation) && hasExactBenefitMatch(benefit, VI_HIGHER_EDUCATION_BENEFIT_FROM)) {
+      benefitHigherEduIssues.push(
+        issue(
+          "vi-benefit-higher-education-replace",
+          rowRef,
+          `Некорректная формулировка в "Льгота". Найдено: "${String(benefit).trim()}". Значение должно быть заменено на "${VI_HIGHER_EDUCATION_BENEFIT_TO}".`
+        )
+      );
+    }
     if (onProgress) onProgress(index + 1, viWorkbookData.rows.length, `Проверка критериев ВИ... ${index + 1}/${viWorkbookData.rows.length}`);
     updateRowProgress("vi", index + 1, viWorkbookData.rows.length);
     if ((index + 1) % CHECK_LOOP_YIELD_EVERY === 0) await yieldToUi();
   }
 
-  return { maxIssues, minIssues, rule21Issues, rule41Issues, spoColumnIssues, specialMarkIssues };
+  return { maxIssues, minIssues, rule21Issues, rule41Issues, spoColumnIssues, specialMarkIssues, benefitHigherEduIssues };
 }
 
 /**
@@ -1432,6 +1456,18 @@ function findBenefitReplacement(cellValue, patterns) {
   return null;
 }
 
+function hasExactBenefitMatch(value, expected) {
+  const normalized = normalizeBenefitText(value);
+  const expectedNormalized = normalizeBenefitText(expected);
+  if (!normalized || !expectedNormalized) return false;
+  return normalized === expectedNormalized;
+}
+
+function isHigherEducationBase(value) {
+  const normalized = normalizeBenefitText(value);
+  return normalized.includes("высшее");
+}
+
 async function checkPnViMatch(pnWorkbookData, viWorkbookData, rules, onProgress) {
   const issues = [];
   const pnKgHeader = findHeader(pnWorkbookData.headers, rules.keyFieldPn);
@@ -1754,6 +1790,8 @@ function buildCorrectedViData(viWorkbookData, minBallData, spoMinBallData, benef
   const specialMarkHeader = findHeader(headers, viRules.specialMarkColumn, templateHeaders);
   const levelHeader = findHeader(headers, "Уровень подготовки", templateHeaders);
   const qualHeader = findHeader(headers, "Квалификация", templateHeaders);
+  const baseEducationHeader = findHeader(headers, "Базовый вид образования", templateHeaders);
+  const benefitHeader = findHeader(headers, "Льгота", templateHeaders);
 
   const rows = viWorkbookData.rows.map((row) => {
     const next = {};
@@ -1776,6 +1814,14 @@ function buildCorrectedViData(viWorkbookData, minBallData, spoMinBallData, benef
     if (specialMarkHeader && next[specialMarkHeader]) {
       const rep = applyBenefitToValue(next[specialMarkHeader], patterns);
       if (rep !== null) next[specialMarkHeader] = rep;
+    }
+    if (
+      baseEducationHeader &&
+      benefitHeader &&
+      isHigherEducationBase(getVal(next, baseEducationHeader)) &&
+      hasExactBenefitMatch(getVal(next, benefitHeader), VI_HIGHER_EDUCATION_BENEFIT_FROM)
+    ) {
+      next[benefitHeader] = VI_HIGHER_EDUCATION_BENEFIT_TO;
     }
 
     if (levelHeader && qualHeader) {
@@ -2092,6 +2138,7 @@ function getIssueTypeLabel(type) {
     "missing-kg-in-vi": "КГ отсутствует в файле ВИ",
     "pn-vi-mismatch": "Несовпадения ПН и ВИ",
     "benefit-replace": "Некорректные названия льгот",
+    "vi-benefit-higher-education-replace": "Льгота ВИ (ВО): требуется добавление «Инвалид III группы»",
     "vi-seq-missing-group-columns": "Порядок предметов ВИ: нет столбцов группировки",
     "vi-seq-id-not-last": "Порядок предметов ВИ: ИД не в конце группы",
     "vi-seq-replace-without-base": "Порядок предметов ВИ: замена без базовой строки",
